@@ -11,6 +11,7 @@ import {
   AppState,
   ActivityIndicator,
   View,
+  Alert,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -27,6 +28,7 @@ const Home = () => {
   const orientationTimeoutRef = useRef(null);
   const appStateRef = useRef(AppState.currentState);
   const officeLoadTimeoutRef = useRef(null);
+  const googleDriveLoadTimeoutRef = useRef(null);
 
   const [currentUrl, setCurrentUrl] = useState(`${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`);
   const [canGoBack, setCanGoBack] = useState(false);
@@ -36,7 +38,9 @@ const Home = () => {
   const [isLivePage, setIsLivePage] = useState(false);
   const [isOfficeViewer, setIsOfficeViewer] = useState(false);
   const [officeLoading, setOfficeLoading] = useState(false);
-  const [webViewKey, setWebViewKey] = useState(0); 
+  const [webViewKey, setWebViewKey] = useState(0);
+  const [isGoogleDriveAuth, setIsGoogleDriveAuth] = useState(false);
+  const [googleDriveLoadAttempts, setGoogleDriveLoadAttempts] = useState(0);
 
   useEffect(() => {
     if (Platform.OS === 'android') {
@@ -48,11 +52,9 @@ const Home = () => {
     }
   }, []);
 
- 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
-      
         if (isOfficeViewer && webViewRef.current) {
           setTimeout(() => {
             webViewRef.current?.reload();
@@ -65,7 +67,6 @@ const Home = () => {
     return () => subscription.remove();
   }, [isOfficeViewer]);
 
- 
   useEffect(() => {
     return () => {
       if (officeLoadTimeoutRef.current) {
@@ -73,6 +74,9 @@ const Home = () => {
       }
       if (orientationTimeoutRef.current) {
         clearTimeout(orientationTimeoutRef.current);
+      }
+      if (googleDriveLoadTimeoutRef.current) {
+        clearTimeout(googleDriveLoadTimeoutRef.current);
       }
     };
   }, []);
@@ -90,7 +94,9 @@ const Home = () => {
     
     if (backPressCount === 0) {
       setBackPressCount(1);
-      ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      }
       setTimeout(() => setBackPressCount(0), 2000);
       return true;
     }
@@ -115,16 +121,15 @@ const Home = () => {
     if (url.includes("mobiletoken")) return url;
     if (url.includes("view.officeapps.live.com")) return url;
     if (url.includes("docs.google.com")) return url;
+    if (url.includes("drive.google.com")) return url;
     return url.includes("?")
       ? `${url}&mobiletoken=${MOBILE_TOKEN}`
       : `${url}?mobiletoken=${MOBILE_TOKEN}`;
   };
 
-
   const handleOrientation = (url) => {
     if (!url) return;
     
-   
     const shouldLandscape = url.includes("/live/") || 
                            url.includes("/session-details") || 
                            url.includes("/boards/") ||
@@ -155,9 +160,12 @@ const Home = () => {
 
   const onLoadProgress = ({ nativeEvent }) => {
     const value = nativeEvent.progress;
-    setIsLoading(value < 1);
     
-   
+  
+    if (!isGoogleDriveAuth) {
+      setIsLoading(value < 1);
+    }
+    
     if (isOfficeViewer && value >= 0.8) {
       setOfficeLoading(false);
       if (officeLoadTimeoutRef.current) {
@@ -189,13 +197,42 @@ const Home = () => {
     return url.includes('docs.google.com/forms');
   };
 
+  const isGoogleDriveAuthUrl = (url) => {
+    return url.includes('drive.google.com/auth_warmup') || 
+           url.includes('accounts.google.com') ||
+           (url.includes('drive.google.com') && url.includes('auth'));
+  };
+
+  const isGoogleDriveViewerUrl = (url) => {
+    return url.includes('docs.google.com/viewer') || 
+           (url.includes('drive.google.com') && url.includes('viewer'));
+  };
+
   const handleShouldStartLoad = (request) => {
     let url = request.url;
     console.log('[Should Start Load]', url);
 
     if (url.startsWith('about:blank')) return true;
 
-   
+
+    if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
+      console.log('[iOS] Google Drive auth detected, handling...');
+      setIsGoogleDriveAuth(true);
+      setIsLoading(true);
+      
+     
+      if (googleDriveLoadTimeoutRef.current) {
+        clearTimeout(googleDriveLoadTimeoutRef.current);
+      }
+      googleDriveLoadTimeoutRef.current = setTimeout(() => {
+        console.log('[iOS] Google Drive auth timeout, hiding loader');
+        setIsLoading(false);
+        setIsGoogleDriveAuth(false);
+      }, 100);
+      
+      return true;
+    }
+
     if (isOfficeViewer && !isOfficeUrl(url)) {
       console.log('[Navigating away from Office viewer]');
       setIsOfficeViewer(false);
@@ -203,7 +240,6 @@ const Home = () => {
       return true;
     }
 
-  
     if (isGoogleFormUrl(url)) {
       console.log('[Google Form Detected - Setting Landscape]', url);
       setTimeout(() => {
@@ -212,29 +248,25 @@ const Home = () => {
       }, 100);
     }
 
-   
     if (isOfficeUrl(url)) {
       console.log('[Office URL Detected]', url);
       setIsOfficeViewer(true);
       setOfficeLoading(true);
       
-     
       officeLoadTimeoutRef.current = setTimeout(() => {
         console.log('[Office viewer loading timeout]');
         setOfficeLoading(false);
-      }, 10000);
+      }, 1000);
       
       return true;
     }
 
-    
     if (url.includes("/boards/") || url.includes("/video/") || 
         url.includes("youtube.com/embed") || url.includes("docs.google.com/forms")) {
       return true;
     }
 
-
-    if (!url.includes('mobiletoken') && !isOfficeUrl(url) && !isGoogleFormUrl(url)) {
+    if (!url.includes('mobiletoken') && !isOfficeUrl(url) && !isGoogleFormUrl(url) && !isGoogleDriveAuthUrl(url)) {
       const urlWithToken = getFinalUrl(url);
       if (urlWithToken !== url) {
         console.log('[URL Modified with token]', urlWithToken);
@@ -246,13 +278,84 @@ const Home = () => {
     return true;
   };
 
- 
   const getInjectedJavaScript = () => {
     const officeFixScript = `
       (function() {
+        // Handle Google Drive viewer issues on iOS
+        if (window.location.href.includes('docs.google.com/viewer') || 
+            window.location.href.includes('drive.google.com')) {
+          
+          console.log('[JS] Google Drive viewer detected');
+          
+          // Force viewport for better display
+          var meta = document.querySelector('meta[name=viewport]');
+          if (meta) {
+            meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover');
+          }
+          
+          // Check if the viewer is loaded properly
+          function checkViewerLoaded() {
+            var viewer = document.querySelector('#viewer');
+            var iframe = document.querySelector('iframe');
+            var docViewer = document.querySelector('.doc-viewer');
+            var pdfViewer = document.querySelector('.pdf-viewer');
+            
+            if (viewer && viewer.clientHeight > 0) {
+              console.log('[JS] Google viewer loaded (viewer element)');
+              window.ReactNativeWebView.postMessage('googleViewerLoaded');
+              return true;
+            }
+            if (iframe && iframe.contentWindow && iframe.clientHeight > 0) {
+              console.log('[JS] Google viewer loaded (iframe)');
+              window.ReactNativeWebView.postMessage('googleViewerLoaded');
+              return true;
+            }
+            if (docViewer && docViewer.clientHeight > 0) {
+              console.log('[JS] Google viewer loaded (doc-viewer)');
+              window.ReactNativeWebView.postMessage('googleViewerLoaded');
+              return true;
+            }
+            if (pdfViewer && pdfViewer.clientHeight > 0) {
+              console.log('[JS] Google viewer loaded (pdf-viewer)');
+              window.ReactNativeWebView.postMessage('googleViewerLoaded');
+              return true;
+            }
+            return false;
+          }
+          
+          // Check every 500ms if viewer is loaded
+          var checkCount = 0;
+          var checkInterval = setInterval(function() {
+            checkCount++;
+            if (checkViewerLoaded()) {
+              clearInterval(checkInterval);
+            } else if (checkCount > 20) {
+              // After 10 seconds, stop checking
+              console.log('[JS] Google viewer load timeout');
+              clearInterval(checkInterval);
+              window.ReactNativeWebView.postMessage('googleViewerTimeout');
+            }
+          }, 500);
+          
+          // Also listen for load events
+          window.addEventListener('load', function() {
+            console.log('[JS] Window load event fired');
+            setTimeout(function() {
+              checkViewerLoaded();
+            }, 1000);
+          });
+          
+          // Fix for auth warmup issues
+          if (window.location.href.includes('auth_warmup')) {
+            console.log('[JS] Auth warmup detected, attempting to reload');
+            setTimeout(function() {
+              window.location.reload();
+            }, 1000);
+          }
+        }
+        
         // Handle Google Forms for better landscape display
         if (window.location.href.includes('docs.google.com/forms')) {
-          // Force viewport for better landscape display
           var meta = document.querySelector('meta[name=viewport]');
           if (meta) {
             meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover');
@@ -263,7 +366,6 @@ const Home = () => {
             document.head.appendChild(newMeta);
           }
           
-          // Make Google Forms full width in landscape
           var style = document.createElement('style');
           style.innerHTML = '.freebirdFormviewerViewFormCard { max-width: 100% !important; width: 100% !important; margin: 0 !important; } .freebirdFormviewerViewHeaderHeader { padding: 10px !important; } .freebirdFormviewerViewItemsItemItem { width: 100% !important; }';
           document.head.appendChild(style);
@@ -299,7 +401,6 @@ const Home = () => {
         
         // Fix for iOS WebView with Office documents
         if (window.location.href.includes('view.officeapps.live.com')) {
-          // Force iframe to be visible
           setTimeout(function() {
             var frames = document.querySelectorAll('iframe');
             frames.forEach(function(frame) {
@@ -313,23 +414,19 @@ const Home = () => {
               frame.style.opacity = '1';
             });
             
-            // Fix for zoom issues
             var meta = document.querySelector('meta[name=viewport]');
             if (meta) {
               meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes');
             }
             
-            // Force a resize event
             window.dispatchEvent(new Event('resize'));
             
-            // Check every 500ms if viewer is loaded
             var checkInterval = setInterval(function() {
               if (checkOfficeViewerLoaded()) {
                 clearInterval(checkInterval);
               }
             }, 500);
             
-            // Stop checking after 10 seconds
             setTimeout(function() {
               clearInterval(checkInterval);
               window.ReactNativeWebView.postMessage('officeViewerTimeout');
@@ -341,7 +438,6 @@ const Home = () => {
         // Disable context menu
         document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
         
-        // Style to make everything visible
         var style = document.createElement('style');
         style.innerHTML = '* { -webkit-user-select: none !important; user-select: none !important; } iframe { display: block !important; visibility: visible !important; }';
         document.head.appendChild(style);
@@ -423,6 +519,20 @@ const Home = () => {
     } else if (data === 'officeViewerTimeout') {
       console.log('[Office viewer loading timeout]');
       setOfficeLoading(false);
+    } else if (data === 'googleViewerLoaded') {
+      console.log('[Google viewer loaded successfully]');
+      setIsLoading(false);
+      setIsGoogleDriveAuth(false);
+      if (googleDriveLoadTimeoutRef.current) {
+        clearTimeout(googleDriveLoadTimeoutRef.current);
+      }
+    } else if (data === 'googleViewerTimeout') {
+      console.log('[Google viewer timeout]');
+      setIsLoading(false);
+      setIsGoogleDriveAuth(false);
+      if (googleDriveLoadTimeoutRef.current) {
+        clearTimeout(googleDriveLoadTimeoutRef.current);
+      }
     } else if (data === 'userScrolled') {
       if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
       scrollTimeoutRef.current = setTimeout(() => {
@@ -443,6 +553,25 @@ const Home = () => {
       }
     }
     
+   
+    if (!navState.url.includes('drive.google.com') && !navState.url.includes('docs.google.com')) {
+      if (isGoogleDriveAuth) {
+        console.log('[Navigation] Exiting Google Drive, resetting auth state');
+        setIsGoogleDriveAuth(false);
+        setIsLoading(false);
+      }
+    }
+    
+  
+    if (isGoogleDriveViewerUrl(navState.url) && isGoogleDriveAuth) {
+      console.log('[Navigation] Reached Google Drive viewer, hiding loader');
+      setIsGoogleDriveAuth(false);
+      setIsLoading(false);
+      if (googleDriveLoadTimeoutRef.current) {
+        clearTimeout(googleDriveLoadTimeoutRef.current);
+      }
+    }
+    
     if (!isOffice) {
       handleOrientation(navState.url);
     } else {
@@ -452,11 +581,51 @@ const Home = () => {
 
   const handleLoadEnd = () => {
     console.log('[WebView Load End]');
+    
+    
     setIsLoading(false);
     setOfficeLoading(false);
+    
+    if (isGoogleDriveAuth) {
+      console.log('[Load End] Google Drive auth load ended');
+      
+      setTimeout(() => {
+        setIsGoogleDriveAuth(false);
+        setIsLoading(false);
+      }, 1000);
+    }
+    
     if (officeLoadTimeoutRef.current) {
       clearTimeout(officeLoadTimeoutRef.current);
     }
+    if (googleDriveLoadTimeoutRef.current) {
+      clearTimeout(googleDriveLoadTimeoutRef.current);
+    }
+  };
+
+  const handleLoadStart = () => {
+    console.log('[WebView Load Start]');
+  };
+
+  const handleError = (syntheticEvent) => {
+    const { nativeEvent } = syntheticEvent;
+    console.error('[WebView Error]', nativeEvent);
+    setOfficeLoading(false);
+    setIsLoading(false);
+    
+   
+    if (isGoogleDriveAuth) {
+      console.log('[Error] Resetting Google Drive auth state');
+      setIsGoogleDriveAuth(false);
+    }
+    
+    if (googleDriveLoadTimeoutRef.current) {
+      clearTimeout(googleDriveLoadTimeoutRef.current);
+    }
+  };
+
+  const shouldShowLoader = () => {
+    return isLoading || officeLoading || isGoogleDriveAuth;
   };
 
   return (
@@ -470,14 +639,13 @@ const Home = () => {
         style={[styles.container, isLivePage && Platform.OS === 'ios' ? styles.iosLiveContainer : styles.container]}
         edges={isLivePage ? [] : ['top', 'left', 'right', 'bottom']}
       >
-        {/* Custom loader for Office documents */}
-        {(isLoading || officeLoading) && (
+        {shouldShowLoader() && (
           <View style={styles.loaderContainer}>
             <ActivityIndicator size="large" color="#dfe6ec" />
           </View>
         )}
         
-        {isLoading && !isOfficeViewer && (
+        {isLoading && !isOfficeViewer && !isGoogleDriveAuth && (
           <Animated.View
             style={[
               styles.progressBar,
@@ -503,17 +671,17 @@ const Home = () => {
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
           onLoadProgress={onLoadProgress}
+          onLoadStart={handleLoadStart}
           onLoadEnd={handleLoadEnd}
-          onError={(syntheticEvent) => {
-            const { nativeEvent } = syntheticEvent;
-            console.error('[WebView Error]', nativeEvent);
-            setOfficeLoading(false);
-            setIsLoading(false);
-          }}
+          onError={handleError}
           onHttpError={(syntheticEvent) => {
             const { nativeEvent } = syntheticEvent;
             console.error('[HTTP Error]', nativeEvent.statusCode, nativeEvent.url);
             setOfficeLoading(false);
+            if (isGoogleDriveAuth) {
+              setIsGoogleDriveAuth(false);
+              setIsLoading(false);
+            }
           }}
           pullToRefreshEnabled={Platform.OS === 'android'}
           onRefresh={onRefresh}
@@ -543,8 +711,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#080707',
     paddingBottom: 10,
-    marginLeft: -30,
-    marginBottom: -10,
+   
   },
   progressBar: {
     height: 3,
