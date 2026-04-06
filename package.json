@@ -17,10 +17,12 @@
     "react": "19.2.0",
     "react-native": "0.83.1",
     "react-native-deep-linking": "^2.2.0",
+    "react-native-immersive-mode": "^2.0.2",
     "react-native-keep-awake": "^4.0.0",
     "react-native-orientation-locker": "^1.7.0",
     "react-native-safe-area-context": "^5.6.2",
     "react-native-screens": "^4.20.0",
+    "react-native-version-check": "^3.5.0",
     "react-native-webview": "^13.16.0"
   },
   "devDependencies": {

@@ -17,11 +17,20 @@ import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Orientation from 'react-native-orientation-locker';
 import KeepAwake from 'react-native-keep-awake';
+import { useNavigation } from '@react-navigation/native';
+import ImmersiveMode from "react-native-immersive-mode";
+
+
+
+import CustomModal from '../components/CustomModal';
 
 const HOME_URL = 'https://learner.viliyo.com/dashboard';
 const MOBILE_TOKEN = "210303120209";
 
 const Home = () => {
+
+  const navigation = useNavigation();
+
   const webViewRef = useRef(null);
   const progress = useRef(new Animated.Value(0)).current;
   const scrollTimeoutRef = useRef(null);
@@ -41,6 +50,59 @@ const Home = () => {
   const [webViewKey, setWebViewKey] = useState(0);
   const [isGoogleDriveAuth, setIsGoogleDriveAuth] = useState(false);
   const [googleDriveLoadAttempts, setGoogleDriveLoadAttempts] = useState(0);
+  const [pendingNavigation, setPendingNavigation] = useState(null);
+
+
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+
+  const targetUrl = 'https://learnerlive.viliyo.com/live/';
+
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (!isLiveSessionUrl(currentUrl)) {
+        return;
+      }
+
+      console.log('Blocking iOS back, showing modal');
+
+      e.preventDefault();
+
+
+      setPendingNavigation(e.data.action);
+
+      setShowLeaveModal(true);
+    });
+
+    return unsubscribe;
+  }, [navigation, currentUrl]);
+
+useEffect(() => {
+  if (isLivePage) {
+    ImmersiveMode.fullLayout(true);
+    ImmersiveMode.setBarMode("Full"); 
+  } else {
+    ImmersiveMode.setBarMode("Normal"); 
+  }
+}, [isLivePage]);
+
+  
+  const handleConfirmLeave = () => {
+    setShowLeaveModal(false);
+
+    if (webViewRef.current && canGoBack) {
+      webViewRef.current.goBack();
+      return;
+    }
+
+
+    if (pendingNavigation) {
+      navigation.dispatch(pendingNavigation);
+      setPendingNavigation(null);
+    } else {
+      navigation.goBack();
+    }
+  };
 
   useEffect(() => {
     if (Platform.OS === 'android') {
@@ -81,17 +143,19 @@ const Home = () => {
     };
   }, []);
 
+
   const handleBackPress = useCallback(() => {
     if (isOfficeViewer && webViewRef.current) {
       webViewRef.current.goBack();
       return true;
     }
-    
+
     if (canGoBack && webViewRef.current) {
-      webViewRef.current.goBack();
+
+      setShowLeaveModal(true);
       return true;
     }
-    
+
     if (backPressCount === 0) {
       setBackPressCount(1);
       if (Platform.OS === 'android') {
@@ -129,16 +193,16 @@ const Home = () => {
 
   const handleOrientation = (url) => {
     if (!url) return;
-    
-    const shouldLandscape = url.includes("/live/") || 
-                           url.includes("/session-details") || 
-                           url.includes("/boards/") ||
-                           url.includes("docs.google.com/forms") ||
-                           url.includes("docs.google.com/presentation") ||
-                           url.includes("docs.google.com/spreadsheets") ||
-                           url.includes("youtube.com/embed") ||
-                           url.includes("youtube.com/watch");
-    
+
+    const shouldLandscape = url.includes("/live/") ||
+      url.includes("/session-details") ||
+      url.includes("/boards/") ||
+      url.includes("docs.google.com/forms") ||
+      url.includes("docs.google.com/presentation") ||
+      url.includes("docs.google.com/spreadsheets") ||
+      url.includes("youtube.com/embed") ||
+      url.includes("youtube.com/watch");
+
     const isLive = url.includes("/live/");
     setIsLivePage(isLive);
 
@@ -160,19 +224,18 @@ const Home = () => {
 
   const onLoadProgress = ({ nativeEvent }) => {
     const value = nativeEvent.progress;
-    
-  
+
     if (!isGoogleDriveAuth) {
       setIsLoading(value < 1);
     }
-    
+
     if (isOfficeViewer && value >= 0.8) {
       setOfficeLoading(false);
       if (officeLoadTimeoutRef.current) {
         clearTimeout(officeLoadTimeoutRef.current);
       }
     }
-    
+
     Animated.timing(progress, {
       toValue: value,
       duration: 100,
@@ -188,9 +251,9 @@ const Home = () => {
   };
 
   const isOfficeUrl = (url) => {
-    return url.includes('view.officeapps.live.com') || 
-           url.includes('officeapps.live.com') ||
-           url.includes('powerpoint.officeapps.live.com');
+    return url.includes('view.officeapps.live.com') ||
+      url.includes('officeapps.live.com') ||
+      url.includes('powerpoint.officeapps.live.com');
   };
 
   const isGoogleFormUrl = (url) => {
@@ -198,14 +261,14 @@ const Home = () => {
   };
 
   const isGoogleDriveAuthUrl = (url) => {
-    return url.includes('drive.google.com/auth_warmup') || 
-           url.includes('accounts.google.com') ||
-           (url.includes('drive.google.com') && url.includes('auth'));
+    return url.includes('drive.google.com/auth_warmup') ||
+      url.includes('accounts.google.com') ||
+      (url.includes('drive.google.com') && url.includes('auth'));
   };
 
   const isGoogleDriveViewerUrl = (url) => {
-    return url.includes('docs.google.com/viewer') || 
-           (url.includes('drive.google.com') && url.includes('viewer'));
+    return url.includes('docs.google.com/viewer') ||
+      (url.includes('drive.google.com') && url.includes('viewer'));
   };
 
   const handleShouldStartLoad = (request) => {
@@ -214,13 +277,11 @@ const Home = () => {
 
     if (url.startsWith('about:blank')) return true;
 
-
     if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
       console.log('[iOS] Google Drive auth detected, handling...');
       setIsGoogleDriveAuth(true);
       setIsLoading(true);
-      
-     
+
       if (googleDriveLoadTimeoutRef.current) {
         clearTimeout(googleDriveLoadTimeoutRef.current);
       }
@@ -229,7 +290,7 @@ const Home = () => {
         setIsLoading(false);
         setIsGoogleDriveAuth(false);
       }, 100);
-      
+
       return true;
     }
 
@@ -252,17 +313,17 @@ const Home = () => {
       console.log('[Office URL Detected]', url);
       setIsOfficeViewer(true);
       setOfficeLoading(true);
-      
+
       officeLoadTimeoutRef.current = setTimeout(() => {
         console.log('[Office viewer loading timeout]');
         setOfficeLoading(false);
       }, 1000);
-      
+
       return true;
     }
 
-    if (url.includes("/boards/") || url.includes("/video/") || 
-        url.includes("youtube.com/embed") || url.includes("docs.google.com/forms")) {
+    if (url.includes("/boards/") || url.includes("/video/") ||
+      url.includes("youtube.com/embed") || url.includes("docs.google.com/forms")) {
       return true;
     }
 
@@ -444,46 +505,46 @@ const Home = () => {
       })();
       true;
     `;
-    
+
+    const scrollMonitorScript = `
+      (function () {
+        if (window.__scrollMonitorInjected) return true;
+        window.__scrollMonitorInjected = true;
+        let timeout;
+        function triggerScroll() { 
+          if (window.ReactNativeWebView) {
+            window.ReactNativeWebView.postMessage('userScrolled');
+          }
+        }
+        window.addEventListener('scroll', function () {
+          clearTimeout(timeout);
+          timeout = setTimeout(triggerScroll, 100);
+        }, true);
+      })();
+      true;
+    `;
+
+    const autoPlayVideoJS = `
+      (function() {
+        const videos = document.querySelectorAll('video, iframe[src*="youtube.com/embed"]');
+        videos.forEach(video => {
+          try {
+            if(video.tagName === 'VIDEO') {
+              video.play().catch(e => console.log('Video play error', e));
+            } else if(video.tagName === 'IFRAME') {
+              const src = video.src;
+              if(!src.includes('autoplay=1')) {
+                video.src = src + (src.includes('?') ? '&' : '?') + 'autoplay=1&playsinline=1';
+              }
+            }
+          } catch(e) {}
+        });
+      })();
+      true;
+    `;
+
     return officeFixScript + scrollMonitorScript + autoPlayVideoJS;
   };
-
-  const scrollMonitorScript = `
-    (function () {
-      if (window.__scrollMonitorInjected) return true;
-      window.__scrollMonitorInjected = true;
-      let timeout;
-      function triggerScroll() { 
-        if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage('userScrolled');
-        }
-      }
-      window.addEventListener('scroll', function () {
-        clearTimeout(timeout);
-        timeout = setTimeout(triggerScroll, 100);
-      }, true);
-    })();
-    true;
-  `;
-
-  const autoPlayVideoJS = `
-    (function() {
-      const videos = document.querySelectorAll('video, iframe[src*="youtube.com/embed"]');
-      videos.forEach(video => {
-        try {
-          if(video.tagName === 'VIDEO') {
-            video.play().catch(e => console.log('Video play error', e));
-          } else if(video.tagName === 'IFRAME') {
-            const src = video.src;
-            if(!src.includes('autoplay=1')) {
-              video.src = src + (src.includes('?') ? '&' : '?') + 'autoplay=1&playsinline=1';
-            }
-          }
-        } catch(e) {}
-      });
-    })();
-    true;
-  `;
 
   const smoothScrollToTop = `
     (function() {
@@ -509,7 +570,7 @@ const Home = () => {
   const handleMessage = (event) => {
     const data = event.nativeEvent.data;
     console.log('[Message from WebView]', data);
-    
+
     if (data === 'officeViewerLoaded') {
       console.log('[Office viewer loaded successfully]');
       setOfficeLoading(false);
@@ -541,10 +602,14 @@ const Home = () => {
     }
   };
 
+
+
   const handleNavigationStateChange = (navState) => {
     console.log('[Navigation State]', navState.url);
+
     setCanGoBack(navState.canGoBack);
-    
+    setCurrentUrl(navState.url); 
+
     const isOffice = isOfficeUrl(navState.url);
     if (isOffice !== isOfficeViewer) {
       setIsOfficeViewer(isOffice);
@@ -552,8 +617,7 @@ const Home = () => {
         setOfficeLoading(true);
       }
     }
-    
-   
+
     if (!navState.url.includes('drive.google.com') && !navState.url.includes('docs.google.com')) {
       if (isGoogleDriveAuth) {
         console.log('[Navigation] Exiting Google Drive, resetting auth state');
@@ -561,8 +625,7 @@ const Home = () => {
         setIsLoading(false);
       }
     }
-    
-  
+
     if (isGoogleDriveViewerUrl(navState.url) && isGoogleDriveAuth) {
       console.log('[Navigation] Reached Google Drive viewer, hiding loader');
       setIsGoogleDriveAuth(false);
@@ -571,7 +634,7 @@ const Home = () => {
         clearTimeout(googleDriveLoadTimeoutRef.current);
       }
     }
-    
+
     if (!isOffice) {
       handleOrientation(navState.url);
     } else {
@@ -579,22 +642,56 @@ const Home = () => {
     }
   };
 
+
+  useEffect(() => {
+    const backAction = () => {
+
+      if (isLiveSessionUrl(currentUrl)) {
+        setShowLeaveModal(true);
+        return true;
+      }
+
+
+      if (canGoBack && webViewRef.current) {
+        webViewRef.current.goBack();
+        return true;
+      }
+
+      return false;
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction
+    );
+
+    return () => backHandler.remove();
+  }, [currentUrl, canGoBack]);
+
+
+
+  const isLiveSessionUrl = (url) => {
+    return url?.includes('/live');
+  };
+
+
+
+
   const handleLoadEnd = () => {
     console.log('[WebView Load End]');
-    
-    
+
     setIsLoading(false);
     setOfficeLoading(false);
-    
+
     if (isGoogleDriveAuth) {
       console.log('[Load End] Google Drive auth load ended');
-      
+
       setTimeout(() => {
         setIsGoogleDriveAuth(false);
         setIsLoading(false);
       }, 1000);
     }
-    
+
     if (officeLoadTimeoutRef.current) {
       clearTimeout(officeLoadTimeoutRef.current);
     }
@@ -612,13 +709,12 @@ const Home = () => {
     console.error('[WebView Error]', nativeEvent);
     setOfficeLoading(false);
     setIsLoading(false);
-    
-   
+
     if (isGoogleDriveAuth) {
       console.log('[Error] Resetting Google Drive auth state');
       setIsGoogleDriveAuth(false);
     }
-    
+
     if (googleDriveLoadTimeoutRef.current) {
       clearTimeout(googleDriveLoadTimeoutRef.current);
     }
@@ -644,7 +740,7 @@ const Home = () => {
             <ActivityIndicator size="large" color="#dfe6ec" />
           </View>
         )}
-        
+
         {isLoading && !isOfficeViewer && !isGoogleDriveAuth && (
           <Animated.View
             style={[
@@ -655,7 +751,7 @@ const Home = () => {
             ]}
           />
         )}
-        
+
         <WebView
           key={webViewKey}
           ref={webViewRef}
@@ -691,11 +787,20 @@ const Home = () => {
           allowsBackForwardNavigationGestures={true}
           automaticallyAdjustContentInsets={true}
           contentInsetAdjustmentBehavior="automatic"
-          userAgent={Platform.OS === 'ios' ? 
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1" : 
+          userAgent={Platform.OS === 'ios' ?
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1" :
             undefined}
         />
       </SafeAreaView>
+
+
+      <CustomModal
+        visible={showLeaveModal}
+        title="Leave Session"
+        message="Are you sure you want to leave this session?"
+        onConfirm={handleConfirmLeave}
+        onCancel={() => setShowLeaveModal(false)}
+      />
     </>
   );
 };
@@ -711,7 +816,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#080707',
     paddingBottom: 10,
-   
   },
   progressBar: {
     height: 3,
