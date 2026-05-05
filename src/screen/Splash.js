@@ -66,6 +66,17 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 import React, { useEffect } from 'react';
 import {
   StyleSheet,
@@ -78,18 +89,32 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import VersionCheck from 'react-native-version-check';
 
 const Splash = ({ navigation }) => {
-  const IOS_APP_ID = '6758509903'; 
+  const IOS_APP_ID = '6758509903';
 
   useEffect(() => {
     checkAppUpdate();
   }, []);
+
+
+  const compareVersions = (current, latest) => {
+    const c = current.split('.').map(Number);
+    const l = latest.split('.').map(Number);
+
+    for (let i = 0; i < Math.max(c.length, l.length); i++) {
+      const cNum = c[i] || 0;
+      const lNum = l[i] || 0;
+
+      if (lNum > cNum) return true;
+      if (lNum < cNum) return false;
+    }
+    return false;
+  };
 
   const checkAppUpdate = async () => {
     try {
       const currentVersion = VersionCheck.getCurrentVersion();
       console.log('Current App Version:', currentVersion);
 
-      
       const latestVersion = await VersionCheck.getLatestVersion({
         provider: Platform.OS === 'ios' ? 'appStore' : 'playStore',
         ...(Platform.OS === 'ios' && { appID: IOS_APP_ID }),
@@ -97,21 +122,19 @@ const Splash = ({ navigation }) => {
 
       console.log('Latest Store Version:', latestVersion);
 
-     
-      const updateInfo = VersionCheck.needUpdate({
+      
+      const isUpdateNeeded = compareVersions(
         currentVersion,
-        latestVersion,
-      });
+        latestVersion
+      );
 
-      console.log('Update Info:', updateInfo);
+      console.log('Is Update Needed:', isUpdateNeeded);
 
-      if (updateInfo?.isNeeded) {
-       
+      if (isUpdateNeeded) {
         let storeUrl = await VersionCheck.getStoreUrl({
           ...(Platform.OS === 'ios' && { appID: IOS_APP_ID }),
         });
 
-      
         if (!storeUrl) {
           storeUrl =
             Platform.OS === 'ios'
