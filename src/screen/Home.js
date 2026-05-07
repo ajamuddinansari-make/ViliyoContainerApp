@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   View,
   Alert,
+  Linking
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -271,73 +272,96 @@ useEffect(() => {
       (url.includes('drive.google.com') && url.includes('viewer'));
   };
 
-  const handleShouldStartLoad = (request) => {
-    let url = request.url;
-    console.log('[Should Start Load]', url);
+ const handleShouldStartLoad = (request) => {
+  let url = request.url;
+  console.log('[Should Start Load]', url);
 
-    if (url.startsWith('about:blank')) return true;
+  
+  if (url.startsWith('tel:')) {
+    console.log('[TEL detected]', url);
 
-    if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
-      console.log('[iOS] Google Drive auth detected, handling...');
-      setIsGoogleDriveAuth(true);
-      setIsLoading(true);
+    const phoneNumber = url.split('?')[0];
 
-      if (googleDriveLoadTimeoutRef.current) {
-        clearTimeout(googleDriveLoadTimeoutRef.current);
-      }
-      googleDriveLoadTimeoutRef.current = setTimeout(() => {
-        console.log('[iOS] Google Drive auth timeout, hiding loader');
-        setIsLoading(false);
-        setIsGoogleDriveAuth(false);
-      }, 100);
+    Linking.openURL(phoneNumber).catch(err => {
+      console.error('Failed to open dialer:', err);
+      Alert.alert('Error', 'Unable to open dialer');
+    });
 
-      return true;
+    return false;
+  }
+
+  if (url.startsWith('about:blank')) return true;
+
+  if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
+    console.log('[iOS] Google Drive auth detected, handling...');
+    setIsGoogleDriveAuth(true);
+    setIsLoading(true);
+
+    if (googleDriveLoadTimeoutRef.current) {
+      clearTimeout(googleDriveLoadTimeoutRef.current);
     }
 
-    if (isOfficeViewer && !isOfficeUrl(url)) {
-      console.log('[Navigating away from Office viewer]');
-      setIsOfficeViewer(false);
-      setOfficeLoading(false);
-      return true;
-    }
-
-    if (isGoogleFormUrl(url)) {
-      console.log('[Google Form Detected - Setting Landscape]', url);
-      setTimeout(() => {
-        Orientation.unlockAllOrientations();
-        Orientation.lockToLandscape();
-      }, 100);
-    }
-
-    if (isOfficeUrl(url)) {
-      console.log('[Office URL Detected]', url);
-      setIsOfficeViewer(true);
-      setOfficeLoading(true);
-
-      officeLoadTimeoutRef.current = setTimeout(() => {
-        console.log('[Office viewer loading timeout]');
-        setOfficeLoading(false);
-      }, 1000);
-
-      return true;
-    }
-
-    if (url.includes("/boards/") || url.includes("/video/") ||
-      url.includes("youtube.com/embed") || url.includes("docs.google.com/forms")) {
-      return true;
-    }
-
-    if (!url.includes('mobiletoken') && !isOfficeUrl(url) && !isGoogleFormUrl(url) && !isGoogleDriveAuthUrl(url)) {
-      const urlWithToken = getFinalUrl(url);
-      if (urlWithToken !== url) {
-        console.log('[URL Modified with token]', urlWithToken);
-        setCurrentUrl(urlWithToken);
-        return false;
-      }
-    }
+    googleDriveLoadTimeoutRef.current = setTimeout(() => {
+      setIsLoading(false);
+      setIsGoogleDriveAuth(false);
+    }, 100);
 
     return true;
-  };
+  }
+
+  if (isOfficeViewer && !isOfficeUrl(url)) {
+    console.log('[Navigating away from Office viewer]');
+    setIsOfficeViewer(false);
+    setOfficeLoading(false);
+    return true;
+  }
+
+  if (isGoogleFormUrl(url)) {
+    console.log('[Google Form Detected - Setting Landscape]', url);
+    setTimeout(() => {
+      Orientation.unlockAllOrientations();
+      Orientation.lockToLandscape();
+    }, 100);
+  }
+
+  if (isOfficeUrl(url)) {
+    console.log('[Office URL Detected]', url);
+    setIsOfficeViewer(true);
+    setOfficeLoading(true);
+
+    officeLoadTimeoutRef.current = setTimeout(() => {
+      setOfficeLoading(false);
+    }, 1000);
+
+    return true;
+  }
+
+  if (
+    url.includes("/boards/") ||
+    url.includes("/video/") ||
+    url.includes("youtube.com/embed") ||
+    url.includes("docs.google.com/forms")
+  ) {
+    return true;
+  }
+
+  if (
+    !url.includes('mobiletoken') &&
+    !isOfficeUrl(url) &&
+    !isGoogleFormUrl(url) &&
+    !isGoogleDriveAuthUrl(url)
+  ) {
+    const urlWithToken = getFinalUrl(url);
+
+    if (urlWithToken !== url) {
+      console.log('[URL Modified with token]', urlWithToken);
+      setCurrentUrl(urlWithToken);
+      return false;
+    }
+  }
+
+  return true;
+};
 
   const getInjectedJavaScript = () => {
     const officeFixScript = `
