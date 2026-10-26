@@ -12,24 +12,21 @@ import {
   ActivityIndicator,
   View,
   Alert,
-  Linking
+  Linking,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Orientation from 'react-native-orientation-locker';
 import KeepAwake from 'react-native-keep-awake';
 import { useNavigation } from '@react-navigation/native';
-import ImmersiveMode from "react-native-immersive-mode";
-
-
+import ImmersiveMode from 'react-native-immersive-mode';
 
 import CustomModal from '../components/CustomModal';
 
-const HOME_URL = 'https://learner.viliyo.com/dashboard';
-const MOBILE_TOKEN = "210303120209";
+const HOME_URL = 'https://learner-uat-new.viliyo.com/learner/dashboard';
+const MOBILE_TOKEN = '210303120209';
 
 const Home = () => {
-
   const navigation = useNavigation();
 
   const webViewRef = useRef(null);
@@ -39,8 +36,11 @@ const Home = () => {
   const appStateRef = useRef(AppState.currentState);
   const officeLoadTimeoutRef = useRef(null);
   const googleDriveLoadTimeoutRef = useRef(null);
+  const webRequestedOrientationRef = useRef(null);
 
-  const [currentUrl, setCurrentUrl] = useState(`${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`);
+  const [currentUrl, setCurrentUrl] = useState(
+    `${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`,
+  );
   const [canGoBack, setCanGoBack] = useState(false);
   const [backPressCount, setBackPressCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -53,14 +53,12 @@ const Home = () => {
   const [googleDriveLoadAttempts, setGoogleDriveLoadAttempts] = useState(0);
   const [pendingNavigation, setPendingNavigation] = useState(null);
 
-
   const [showLeaveModal, setShowLeaveModal] = useState(false);
 
   const targetUrl = 'https://learnerlive.viliyo.com/live/';
 
-
   useEffect(() => {
-    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+    const unsubscribe = navigation.addListener('beforeRemove', e => {
       if (!isLiveSessionUrl(currentUrl)) {
         return;
       }
@@ -68,7 +66,6 @@ const Home = () => {
       console.log('Blocking iOS back, showing modal');
 
       e.preventDefault();
-
 
       setPendingNavigation(e.data.action);
 
@@ -78,24 +75,27 @@ const Home = () => {
     return unsubscribe;
   }, [navigation, currentUrl]);
 
-useEffect(() => {
-  if (isLivePage) {
-    ImmersiveMode.fullLayout(true);
-    ImmersiveMode.setBarMode("Full"); 
-  } else {
-    ImmersiveMode.setBarMode("Normal"); 
-  }
-}, [isLivePage]);
+  useEffect(() => {
+    if (isLivePage) {
+      ImmersiveMode.fullLayout(true);
+      ImmersiveMode.setBarMode('Full');
+    } else {
+      ImmersiveMode.setBarMode('Normal');
+    }
+  }, [isLivePage]);
 
-  
   const handleConfirmLeave = () => {
     setShowLeaveModal(false);
+
+    // Leaving a live session — drop any web-requested landscape lock.
+    webRequestedOrientationRef.current = null;
+    KeepAwake.deactivate();
+    Orientation.lockToPortrait();
 
     if (webViewRef.current && canGoBack) {
       webViewRef.current.goBack();
       return;
     }
-
 
     if (pendingNavigation) {
       navigation.dispatch(pendingNavigation);
@@ -110,14 +110,17 @@ useEffect(() => {
       PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.CAMERA,
         PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
+        // PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
       ]);
     }
   }, []);
 
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
         if (isOfficeViewer && webViewRef.current) {
           setTimeout(() => {
             webViewRef.current?.reload();
@@ -144,7 +147,6 @@ useEffect(() => {
     };
   }, []);
 
-
   const handleBackPress = useCallback(() => {
     if (isOfficeViewer && webViewRef.current) {
       webViewRef.current.goBack();
@@ -152,7 +154,6 @@ useEffect(() => {
     }
 
     if (canGoBack && webViewRef.current) {
-
       setShowLeaveModal(true);
       return true;
     }
@@ -170,56 +171,60 @@ useEffect(() => {
   }, [canGoBack, backPressCount, isOfficeViewer]);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
+    const sub = BackHandler.addEventListener(
+      'hardwareBackPress',
+      handleBackPress,
+    );
     return () => sub.remove();
   }, [handleBackPress]);
 
   useEffect(() => {
+    Orientation.lockToPortrait();
+
     return () => {
-      Orientation.unlockAllOrientations();
+      if (orientationTimeoutRef.current) {
+        clearTimeout(orientationTimeoutRef.current);
+      }
+
+      webRequestedOrientationRef.current = null;
       Orientation.lockToPortrait();
       KeepAwake.deactivate();
     };
   }, []);
 
-  const getFinalUrl = (url) => {
-    if (url.includes("mobiletoken")) return url;
-    if (url.includes("view.officeapps.live.com")) return url;
-    if (url.includes("docs.google.com")) return url;
-    if (url.includes("drive.google.com")) return url;
-    return url.includes("?")
+  const getFinalUrl = url => {
+    if (url.includes('mobiletoken')) return url;
+    if (url.includes('view.officeapps.live.com')) return url;
+    if (url.includes('docs.google.com')) return url;
+    if (url.includes('drive.google.com')) return url;
+    return url.includes('?')
       ? `${url}&mobiletoken=${MOBILE_TOKEN}`
       : `${url}?mobiletoken=${MOBILE_TOKEN}`;
   };
 
-  const handleOrientation = (url) => {
+  const handleOrientation = url => {
     if (!url) return;
 
-    const shouldLandscape = url.includes("/live/") ||
-      url.includes("/session-details") ||
-      url.includes("/boards/") ||
-      url.includes("docs.google.com/forms") ||
-      url.includes("docs.google.com/presentation") ||
-      url.includes("docs.google.com/spreadsheets") ||
-      url.includes("youtube.com/embed") ||
-      url.includes("youtube.com/watch");
+    setIsLivePage(url.includes('/live/'));
 
-    const isLive = url.includes("/live/");
-    setIsLivePage(isLive);
+    if (orientationTimeoutRef.current) {
+      clearTimeout(orientationTimeoutRef.current);
+    }
 
-    if (orientationTimeoutRef.current) clearTimeout(orientationTimeoutRef.current);
     orientationTimeoutRef.current = setTimeout(() => {
-      if (shouldLandscape) {
-        console.log('[Orientation] Locking to landscape for:', url);
-        KeepAwake.activate();
+      // If the web app has requested a specific orientation, honor it.
+      if (webRequestedOrientationRef.current === 'landscape') {
+        console.log(
+          '[Orientation] Web-requested landscape — keeping landscape',
+        );
         Orientation.unlockAllOrientations();
         Orientation.lockToLandscape();
-      } else {
-        console.log('[Orientation] Locking to portrait for:', url);
-        KeepAwake.deactivate();
-        Orientation.unlockAllOrientations();
-        Orientation.lockToPortrait();
+        return;
       }
+
+      console.log('[Orientation] Default — locking to portrait for:', url);
+      KeepAwake.deactivate();
+      Orientation.lockToPortrait();
     }, 200);
   };
 
@@ -251,117 +256,114 @@ useEffect(() => {
     setTimeout(() => setRefreshing(false), 2000);
   };
 
-  const isOfficeUrl = (url) => {
-    return url.includes('view.officeapps.live.com') ||
+  const isOfficeUrl = url => {
+    return (
+      url.includes('view.officeapps.live.com') ||
       url.includes('officeapps.live.com') ||
-      url.includes('powerpoint.officeapps.live.com');
+      url.includes('powerpoint.officeapps.live.com')
+    );
   };
 
-  const isGoogleFormUrl = (url) => {
+  const isGoogleFormUrl = url => {
     return url.includes('docs.google.com/forms');
   };
 
-  const isGoogleDriveAuthUrl = (url) => {
-    return url.includes('drive.google.com/auth_warmup') ||
+  const isGoogleDriveAuthUrl = url => {
+    return (
+      url.includes('drive.google.com/auth_warmup') ||
       url.includes('accounts.google.com') ||
-      (url.includes('drive.google.com') && url.includes('auth'));
+      (url.includes('drive.google.com') && url.includes('auth'))
+    );
   };
 
-  const isGoogleDriveViewerUrl = (url) => {
-    return url.includes('docs.google.com/viewer') ||
-      (url.includes('drive.google.com') && url.includes('viewer'));
+  const isGoogleDriveViewerUrl = url => {
+    return (
+      url.includes('docs.google.com/viewer') ||
+      (url.includes('drive.google.com') && url.includes('viewer'))
+    );
   };
 
- const handleShouldStartLoad = (request) => {
-  let url = request.url;
-  console.log('[Should Start Load]', url);
+  const handleShouldStartLoad = request => {
+    let url = request.url;
+    console.log('[Should Start Load]', url);
 
-  
-  if (url.startsWith('tel:')) {
-    console.log('[TEL detected]', url);
+    if (url.startsWith('tel:')) {
+      console.log('[TEL detected]', url);
 
-    const phoneNumber = url.split('?')[0];
+      const phoneNumber = url.split('?')[0];
 
-    Linking.openURL(phoneNumber).catch(err => {
-      console.error('Failed to open dialer:', err);
-      Alert.alert('Error', 'Unable to open dialer');
-    });
+      Linking.openURL(phoneNumber).catch(err => {
+        console.error('Failed to open dialer:', err);
+        Alert.alert('Error', 'Unable to open dialer');
+      });
 
-    return false;
-  }
-
-  if (url.startsWith('about:blank')) return true;
-
-  if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
-    console.log('[iOS] Google Drive auth detected, handling...');
-    setIsGoogleDriveAuth(true);
-    setIsLoading(true);
-
-    if (googleDriveLoadTimeoutRef.current) {
-      clearTimeout(googleDriveLoadTimeoutRef.current);
-    }
-
-    googleDriveLoadTimeoutRef.current = setTimeout(() => {
-      setIsLoading(false);
-      setIsGoogleDriveAuth(false);
-    }, 100);
-
-    return true;
-  }
-
-  if (isOfficeViewer && !isOfficeUrl(url)) {
-    console.log('[Navigating away from Office viewer]');
-    setIsOfficeViewer(false);
-    setOfficeLoading(false);
-    return true;
-  }
-
-  if (isGoogleFormUrl(url)) {
-    console.log('[Google Form Detected - Setting Landscape]', url);
-    setTimeout(() => {
-      Orientation.unlockAllOrientations();
-      Orientation.lockToLandscape();
-    }, 100);
-  }
-
-  if (isOfficeUrl(url)) {
-    console.log('[Office URL Detected]', url);
-    setIsOfficeViewer(true);
-    setOfficeLoading(true);
-
-    officeLoadTimeoutRef.current = setTimeout(() => {
-      setOfficeLoading(false);
-    }, 1000);
-
-    return true;
-  }
-
-  if (
-    url.includes("/boards/") ||
-    url.includes("/video/") ||
-    url.includes("youtube.com/embed") ||
-    url.includes("docs.google.com/forms")
-  ) {
-    return true;
-  }
-
-  if (
-    !url.includes('mobiletoken') &&
-    !isOfficeUrl(url) &&
-    !isGoogleFormUrl(url) &&
-    !isGoogleDriveAuthUrl(url)
-  ) {
-    const urlWithToken = getFinalUrl(url);
-
-    if (urlWithToken !== url) {
-      console.log('[URL Modified with token]', urlWithToken);
-      setCurrentUrl(urlWithToken);
       return false;
     }
-  }
 
-  return true;
-};
+    if (url.startsWith('about:blank')) return true;
+
+    if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
+      console.log('[iOS] Google Drive auth detected, handling...');
+      setIsGoogleDriveAuth(true);
+      setIsLoading(true);
+
+      if (googleDriveLoadTimeoutRef.current) {
+        clearTimeout(googleDriveLoadTimeoutRef.current);
+      }
+
+      googleDriveLoadTimeoutRef.current = setTimeout(() => {
+        setIsLoading(false);
+        setIsGoogleDriveAuth(false);
+      }, 100);
+
+      return true;
+    }
+
+    if (isOfficeViewer && !isOfficeUrl(url)) {
+      console.log('[Navigating away from Office viewer]');
+      setIsOfficeViewer(false);
+      setOfficeLoading(false);
+      return true;
+    }
+
+    if (isOfficeUrl(url)) {
+      console.log('[Office URL Detected]', url);
+      setIsOfficeViewer(true);
+      setOfficeLoading(true);
+
+      officeLoadTimeoutRef.current = setTimeout(() => {
+        setOfficeLoading(false);
+      }, 1000);
+
+      return true;
+    }
+
+    if (
+      url.includes('/boards/') ||
+      url.includes('/video/') ||
+      url.includes('youtube.com/embed') ||
+      url.includes('docs.google.com/forms')
+    ) {
+      return true;
+    }
+
+    if (
+      !url.includes('mobiletoken') &&
+      !isOfficeUrl(url) &&
+      !isGoogleFormUrl(url) &&
+      !isGoogleDriveAuthUrl(url)
+    ) {
+      const urlWithToken = getFinalUrl(url);
+
+      if (urlWithToken !== url) {
+        console.log('[URL Modified with token]', urlWithToken);
+        setCurrentUrl(urlWithToken);
+        return false;
+      }
+    }
+
+    return true;
+  };
 
   const getInjectedJavaScript = () => {
     const officeFixScript = `
@@ -591,10 +593,60 @@ useEffect(() => {
     true;
   `;
 
-  const handleMessage = (event) => {
+  const handleMessage = event => {
     const data = event.nativeEvent.data;
     console.log('[Message from WebView]', data);
 
+    // --- JSON messages from the web app (e.g. orientation:lock) ---
+    let parsed = null;
+    if (typeof data === 'string' && data.trim().startsWith('{')) {
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        parsed = null;
+      }
+    }
+
+    if (parsed) {
+      if (parsed.type === 'orientation:lock') {
+        const mode = parsed.mode;
+
+        if (mode === 'landscape') {
+          console.log('[Orientation] Web requested LANDSCAPE');
+          webRequestedOrientationRef.current = 'landscape';
+
+          // Clear any pending navigation-driven portrait lock
+          if (orientationTimeoutRef.current) {
+            clearTimeout(orientationTimeoutRef.current);
+          }
+
+          KeepAwake.activate();
+          Orientation.unlockAllOrientations();
+          Orientation.lockToLandscape();
+        } else if (mode === 'portrait') {
+          console.log('[Orientation] Web requested PORTRAIT');
+          webRequestedOrientationRef.current = 'portrait';
+
+          if (orientationTimeoutRef.current) {
+            clearTimeout(orientationTimeoutRef.current);
+          }
+
+          Orientation.unlockAllOrientations();
+          Orientation.lockToPortrait();
+        } else if (mode === 'unlock') {
+          console.log('[Orientation] Web requested UNLOCK');
+          webRequestedOrientationRef.current = null;
+          Orientation.unlockAllOrientations();
+          Orientation.lockToPortrait(); // fall back to app default
+        }
+        return;
+      }
+
+      // Unknown JSON type — ignore or handle below
+      return;
+    }
+
+    // --- Existing plain-string messages ---
     if (data === 'officeViewerLoaded') {
       console.log('[Office viewer loaded successfully]');
       setOfficeLoading(false);
@@ -626,13 +678,11 @@ useEffect(() => {
     }
   };
 
-
-
-  const handleNavigationStateChange = (navState) => {
+  const handleNavigationStateChange = navState => {
     console.log('[Navigation State]', navState.url);
 
     setCanGoBack(navState.canGoBack);
-    setCurrentUrl(navState.url); 
+    setCurrentUrl(navState.url);
 
     const isOffice = isOfficeUrl(navState.url);
     if (isOffice !== isOfficeViewer) {
@@ -642,7 +692,10 @@ useEffect(() => {
       }
     }
 
-    if (!navState.url.includes('drive.google.com') && !navState.url.includes('docs.google.com')) {
+    if (
+      !navState.url.includes('drive.google.com') &&
+      !navState.url.includes('docs.google.com')
+    ) {
       if (isGoogleDriveAuth) {
         console.log('[Navigation] Exiting Google Drive, resetting auth state');
         setIsGoogleDriveAuth(false);
@@ -659,22 +712,15 @@ useEffect(() => {
       }
     }
 
-    if (!isOffice) {
-      handleOrientation(navState.url);
-    } else {
-      Orientation.unlockAllOrientations();
-    }
+    handleOrientation(navState.url);
   };
-
 
   useEffect(() => {
     const backAction = () => {
-
       if (isLiveSessionUrl(currentUrl)) {
         setShowLeaveModal(true);
         return true;
       }
-
 
       if (canGoBack && webViewRef.current) {
         webViewRef.current.goBack();
@@ -686,20 +732,15 @@ useEffect(() => {
 
     const backHandler = BackHandler.addEventListener(
       'hardwareBackPress',
-      backAction
+      backAction,
     );
 
     return () => backHandler.remove();
   }, [currentUrl, canGoBack]);
 
-
-
-  const isLiveSessionUrl = (url) => {
+  const isLiveSessionUrl = url => {
     return url?.includes('/live');
   };
-
-
-
 
   const handleLoadEnd = () => {
     console.log('[WebView Load End]');
@@ -728,7 +769,7 @@ useEffect(() => {
     console.log('[WebView Load Start]');
   };
 
-  const handleError = (syntheticEvent) => {
+  const handleError = syntheticEvent => {
     const { nativeEvent } = syntheticEvent;
     console.error('[WebView Error]', nativeEvent);
     setOfficeLoading(false);
@@ -756,7 +797,12 @@ useEffect(() => {
         backgroundColor="transparent"
       />
       <SafeAreaView
-        style={[styles.container, isLivePage && Platform.OS === 'ios' ? styles.iosLiveContainer : styles.container]}
+        style={[
+          styles.container,
+          isLivePage && Platform.OS === 'ios'
+            ? styles.iosLiveContainer
+            : styles.container,
+        ]}
         edges={isLivePage ? [] : ['top', 'left', 'right', 'bottom']}
       >
         {shouldShowLoader() && (
@@ -770,7 +816,10 @@ useEffect(() => {
             style={[
               styles.progressBar,
               {
-                width: progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
+                width: progress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0%', '100%'],
+                }),
               },
             ]}
           />
@@ -794,9 +843,13 @@ useEffect(() => {
           onLoadStart={handleLoadStart}
           onLoadEnd={handleLoadEnd}
           onError={handleError}
-          onHttpError={(syntheticEvent) => {
+          onHttpError={syntheticEvent => {
             const { nativeEvent } = syntheticEvent;
-            console.error('[HTTP Error]', nativeEvent.statusCode, nativeEvent.url);
+            console.error(
+              '[HTTP Error]',
+              nativeEvent.statusCode,
+              nativeEvent.url,
+            );
             setOfficeLoading(false);
             if (isGoogleDriveAuth) {
               setIsGoogleDriveAuth(false);
@@ -811,12 +864,13 @@ useEffect(() => {
           allowsBackForwardNavigationGestures={true}
           automaticallyAdjustContentInsets={true}
           contentInsetAdjustmentBehavior="automatic"
-          userAgent={Platform.OS === 'ios' ?
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1" :
-            undefined}
+          userAgent={
+            Platform.OS === 'ios'
+              ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1'
+              : undefined
+          }
         />
       </SafeAreaView>
-
 
       <CustomModal
         visible={showLeaveModal}
@@ -839,7 +893,7 @@ const styles = StyleSheet.create({
   iosLiveContainer: {
     flex: 1,
     backgroundColor: '#080707',
-    paddingBottom: 10,
+    paddingBottom: 20,
   },
   progressBar: {
     height: 3,
