@@ -202,6 +202,22 @@ const Home = () => {
       : `${url}?mobiletoken=${MOBILE_TOKEN}`;
   };
 
+  const applyLandscape = () => {
+    // iOS 16+ only force-rotates with an explicit side; lockToLandscape()
+    // just allows landscape. Android keeps the either-direction lock.
+    if (Platform.OS === 'ios') {
+      Orientation.lockToLandscapeLeft();
+    } else {
+      Orientation.lockToLandscape();
+    }
+  };
+
+  const sendOrientationAck = mode => {
+    webViewRef.current?.injectJavaScript(
+      `window.dispatchEvent(new CustomEvent('native-orientation',{detail:{type:'orientation:ack',mode:'${mode}',supported:true}}));true;`,
+    );
+  };
+
   const handleOrientation = url => {
     if (!url) return;
 
@@ -217,8 +233,13 @@ const Home = () => {
         console.log(
           '[Orientation] Web-requested landscape — keeping landscape',
         );
-        Orientation.unlockAllOrientations();
-        Orientation.lockToLandscape();
+        applyLandscape();
+        return;
+      }
+
+      if (webRequestedOrientationRef.current === 'portrait') {
+        console.log('[Orientation] Web-requested portrait — keeping portrait');
+        Orientation.lockToPortrait();
         return;
       }
 
@@ -611,34 +632,38 @@ const Home = () => {
       if (parsed.type === 'orientation:lock') {
         const mode = parsed.mode;
 
+        if (orientationTimeoutRef.current) {
+          clearTimeout(orientationTimeoutRef.current);
+        }
+
         if (mode === 'landscape') {
           console.log('[Orientation] Web requested LANDSCAPE');
           webRequestedOrientationRef.current = 'landscape';
-
-          // Clear any pending navigation-driven portrait lock
-          if (orientationTimeoutRef.current) {
-            clearTimeout(orientationTimeoutRef.current);
-          }
-
           KeepAwake.activate();
-          Orientation.unlockAllOrientations();
-          Orientation.lockToLandscape();
+          applyLandscape();
+          sendOrientationAck('landscape');
         } else if (mode === 'portrait') {
           console.log('[Orientation] Web requested PORTRAIT');
           webRequestedOrientationRef.current = 'portrait';
-
-          if (orientationTimeoutRef.current) {
-            clearTimeout(orientationTimeoutRef.current);
-          }
-
-          Orientation.unlockAllOrientations();
           Orientation.lockToPortrait();
+          sendOrientationAck('portrait');
         } else if (mode === 'unlock') {
           console.log('[Orientation] Web requested UNLOCK');
           webRequestedOrientationRef.current = null;
-          Orientation.unlockAllOrientations();
+          KeepAwake.deactivate();
           Orientation.lockToPortrait(); // fall back to app default
         }
+        return;
+      }
+
+      if (parsed.type === 'orientation:unlock') {
+        console.log('[Orientation] Web requested UNLOCK');
+        if (orientationTimeoutRef.current) {
+          clearTimeout(orientationTimeoutRef.current);
+        }
+        webRequestedOrientationRef.current = null;
+        KeepAwake.deactivate();
+        Orientation.lockToPortrait(); // app default
         return;
       }
 
