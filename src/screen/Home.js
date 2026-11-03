@@ -26,6 +26,56 @@ import CustomModal from '../components/CustomModal';
 const HOME_URL = 'https://learner-uat-new.viliyo.com/learner/dashboard';
 const MOBILE_TOKEN = '210303120209';
 
+// Pauses every <video> and YouTube iframe (enablejsapi=1) on the page.
+const PAUSE_MEDIA_JS = `
+  (function() {
+    try {
+      document.querySelectorAll('video, audio').forEach(function(m) { m.pause(); });
+      document.querySelectorAll('iframe[src*="youtube"]').forEach(function(f) {
+        f.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }), '*');
+      });
+    } catch (e) {}
+  })();
+  true;
+`;
+
+// react-pdf / pdf.js (frontend) uses newer JS APIs that older iOS WebKit lacks,
+// which makes the PDF fail to render on iPhone only. Polyfill them before the
+// page's scripts run.
+const IOS_PDF_POLYFILLS_JS = `
+  (function() {
+    try {
+      if (!Promise.withResolvers) {
+        Promise.withResolvers = function() {
+          var resolve, reject;
+          var promise = new Promise(function(res, rej) { resolve = res; reject = rej; });
+          return { promise: promise, resolve: resolve, reject: reject };
+        };
+      }
+      if (!Array.prototype.at) {
+        Object.defineProperty(Array.prototype, 'at', { configurable: true, writable: true,
+          value: function(n) { n = Math.trunc(n) || 0; if (n < 0) n += this.length; return this[n]; } });
+      }
+      if (!Object.hasOwn) {
+        Object.hasOwn = function(o, k) { return Object.prototype.hasOwnProperty.call(o, k); };
+      }
+      if (!URL.canParse) {
+        URL.canParse = function(u, b) { try { new URL(u, b); return true; } catch (e) { return false; } };
+      }
+      if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype[Symbol.asyncIterator]) {
+        ReadableStream.prototype[Symbol.asyncIterator] = async function* () {
+          var reader = this.getReader();
+          try { while (true) { var r = await reader.read(); if (r.done) return; yield r.value; } }
+          finally { reader.releaseLock(); }
+        };
+      }
+    } catch (e) {}
+  })();
+  true;
+`;
+
+const isYouTubeEmbed = url => /youtube(-nocookie)?\.com\/embed/.test(url || '');
+
 const Home = () => {
   const navigation = useNavigation();
 
@@ -116,7 +166,18 @@ const Home = () => {
   }, []);
 
   useEffect(() => {
+    // Auto stop media when this screen loses focus.
+    return navigation.addListener('blur', () => {
+      webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
+    });
+  }, [navigation]);
+
+  useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
+      // Auto stop media when the app leaves the foreground (needed on iOS).
+      if (nextAppState === 'background') {
+        webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
+      }
       if (
         appStateRef.current.match(/inactive|background/) &&
         nextAppState === 'active'
@@ -285,6 +346,8 @@ const Home = () => {
     );
   };
 
+  const isPdfUrl = url => /\.pdf($|[?#])/i.test(url || '');
+
   const isGoogleFormUrl = url => {
     return url.includes('docs.google.com/forms');
   };
@@ -304,9 +367,18 @@ const Home = () => {
     );
   };
 
+  const isUnauthorizedUrl = url => !!url && url.includes('/unauthorized');
+
   const handleShouldStartLoad = request => {
     let url = request.url;
     console.log('[Should Start Load]', url);
+
+    // Unauthorized page -> use the dashboard URL instead.
+    if (isUnauthorizedUrl(url)) {
+      console.log('[Unauthorized] Redirecting to', HOME_URL);
+      setCurrentUrl(`${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`);
+      return false;
+    }
 
     if (url.startsWith('tel:')) {
       console.log('[TEL detected]', url);
@@ -322,6 +394,28 @@ const Home = () => {
     }
 
     if (url.startsWith('about:blank')) return true;
+
+    // PDFs: open through the Google Docs viewer on iOS (it renders reliably
+    // in the WebView, same as Android). Skip if already inside the viewer.
+    if (
+      Platform.OS === 'ios' &&
+      request.isTopFrame !== false &&
+      isPdfUrl(url) &&
+      !isGoogleDriveViewerUrl(url)
+    ) {
+      const viewerUrl = `https://docs.google.com/viewer?embedded=true&url=${encodeURIComponent(
+        url,
+      )}`;
+      console.log('[iOS] Opening PDF in Google viewer', viewerUrl);
+      setCurrentUrl(viewerUrl);
+      return false;
+    }
+    if (isPdfUrl(url) || isGoogleDriveViewerUrl(url)) return true;
+
+    // Let YouTube embeds (youtube.com / youtube-nocookie.com) load inside the
+    // page's iframe. Without this the URL gets a mobiletoken appended and the
+    // whole WebView is navigated to it, so the video never plays in the page.
+    if (isYouTubeEmbed(url)) return true;
 
     if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
       console.log('[iOS] Google Drive auth detected, handling...');
@@ -362,7 +456,7 @@ const Home = () => {
     if (
       url.includes('/boards/') ||
       url.includes('/video/') ||
-      url.includes('youtube.com/embed') ||
+      isYouTubeEmbed(url) ||
       url.includes('docs.google.com/forms')
     ) {
       return true;
@@ -573,15 +667,18 @@ const Home = () => {
 
     const autoPlayVideoJS = `
       (function() {
-        const videos = document.querySelectorAll('video, iframe[src*="youtube.com/embed"]');
+        const videos = document.querySelectorAll('video, iframe[src*="youtube.com/embed"], iframe[src*="youtube-nocookie.com/embed"]');
         videos.forEach(video => {
           try {
             if(video.tagName === 'VIDEO') {
+              video.setAttribute('playsinline', '');
               video.play().catch(e => console.log('Video play error', e));
             } else if(video.tagName === 'IFRAME') {
               const src = video.src;
               if(!src.includes('autoplay=1')) {
-                video.src = src + (src.includes('?') ? '&' : '?') + 'autoplay=1&playsinline=1';
+                video.src = src.includes('autoplay=')
+                  ? src.replace('autoplay=0', 'autoplay=1')
+                  : src + (src.includes('?') ? '&' : '?') + 'autoplay=1&playsinline=1';
               }
             }
           } catch(e) {}
@@ -706,6 +803,19 @@ const Home = () => {
   const handleNavigationStateChange = navState => {
     console.log('[Navigation State]', navState.url);
 
+    // Server redirects / SPA route changes don't go through
+    // onShouldStartLoadWithRequest, so catch /unauthorized here too.
+    if (isUnauthorizedUrl(navState.url)) {
+      const homeUrl = `${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`;
+      console.log('[Unauthorized] (nav state) Redirecting to', homeUrl);
+      setCurrentUrl(homeUrl);
+      // State may already equal homeUrl (no re-render), so navigate directly.
+      webViewRef.current?.injectJavaScript(
+        `window.location.replace(${JSON.stringify(homeUrl)}); true;`,
+      );
+      return;
+    }
+
     setCanGoBack(navState.canGoBack);
     setCurrentUrl(navState.url);
 
@@ -767,8 +877,8 @@ const Home = () => {
     return url?.includes('/live');
   };
 
-  const handleLoadEnd = () => {
-    console.log('[WebView Load End]');
+  const handleLoadEnd = syntheticEvent => {
+    console.log('[WebView Load End]', syntheticEvent?.nativeEvent?.url);
 
     setIsLoading(false);
     setOfficeLoading(false);
@@ -790,13 +900,25 @@ const Home = () => {
     }
   };
 
-  const handleLoadStart = () => {
-    console.log('[WebView Load Start]');
+  const handleLoadStart = syntheticEvent => {
+    console.log('[WebView Load Start]', syntheticEvent?.nativeEvent?.url);
   };
 
   const handleError = syntheticEvent => {
     const { nativeEvent } = syntheticEvent;
-    console.error('[WebView Error]', nativeEvent);
+    console.error('[WebView Error]', nativeEvent?.url, nativeEvent);
+
+    // iOS reports PDFs/downloads as WebKitErrorDomain 102 ("Frame load
+    // interrupted"). It isn't a real failure, so skip the error screen.
+    if (
+      Platform.OS === 'ios' &&
+      (nativeEvent?.code === 102 || nativeEvent?.code === -999)
+    ) {
+      syntheticEvent.preventDefault?.();
+      setOfficeLoading(false);
+      setIsLoading(false);
+      return;
+    }
     setOfficeLoading(false);
     setIsLoading(false);
 
@@ -853,19 +975,40 @@ const Home = () => {
         <WebView
           key={webViewKey}
           ref={webViewRef}
-          source={{ uri: currentUrl }}
+          source={{
+            uri: currentUrl,
+            // YouTube embeds opened as a top-level page need a Referer,
+            // otherwise iOS shows "Error 153" (player configuration error).
+            headers: currentUrl.includes('youtube')
+              ? { Referer: 'https://learner-uat-new.viliyo.com/' }
+              : undefined,
+          }}
           javaScriptEnabled={true}
           domStorageEnabled={true}
           startInLoadingState={false}
           allowsInlineMediaPlayback={true}
           mediaPlaybackRequiresUserAction={false}
           originWhitelist={['*']}
+          injectedJavaScriptBeforeContentLoaded={
+            Platform.OS === 'ios' ? IOS_PDF_POLYFILLS_JS : undefined
+          }
           injectedJavaScript={getInjectedJavaScript()}
           onShouldStartLoadWithRequest={handleShouldStartLoad}
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
           onLoadProgress={onLoadProgress}
           onLoadStart={handleLoadStart}
+          // iOS: a PDF served as an attachment (Content-Disposition) or with a
+          // non-.pdf URL is reported as a download instead of being rendered.
+          onFileDownload={({ nativeEvent }) => {
+            const downloadUrl = nativeEvent?.downloadUrl;
+            console.log('[iOS] File download', downloadUrl);
+            if (downloadUrl) {
+              Linking.openURL(downloadUrl).catch(() =>
+                Alert.alert('Error', 'Unable to open this file'),
+              );
+            }
+          }}
           onLoadEnd={handleLoadEnd}
           onError={handleError}
           onHttpError={syntheticEvent => {
