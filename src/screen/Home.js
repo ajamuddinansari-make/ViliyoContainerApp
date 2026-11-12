@@ -23,7 +23,7 @@ import ImmersiveMode from 'react-native-immersive-mode';
 
 import CustomModal from '../components/CustomModal';
 
-const HOME_URL = 'https://learner-uat-new.viliyo.com/learner/dashboard';
+const HOME_URL = 'https://learner.viliyo.com/dashboard';
 const MOBILE_TOKEN = '210303120209';
 
 // Pauses every <video> and YouTube iframe (enablejsapi=1) on the page.
@@ -105,7 +105,7 @@ const Home = () => {
 
   const [showLeaveModal, setShowLeaveModal] = useState(false);
 
-  const targetUrl = 'https://learnerlive.viliyo.com/live/';
+  // const targetUrl = 'https://learnerlive.viliyo.com/live/';
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', e => {
@@ -172,27 +172,34 @@ const Home = () => {
     });
   }, [navigation]);
 
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', nextAppState => {
-      // Auto stop media when the app leaves the foreground (needed on iOS).
-      if (nextAppState === 'background') {
-        webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
-      }
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        nextAppState === 'active'
-      ) {
-        if (isOfficeViewer && webViewRef.current) {
-          setTimeout(() => {
-            webViewRef.current?.reload();
-          }, 100);
-        }
-      }
-      appStateRef.current = nextAppState;
-    });
+useEffect(() => {
+  const subscription = AppState.addEventListener('change', nextAppState => {
 
-    return () => subscription.remove();
-  }, [isOfficeViewer]);
+    // Stop videos and audio when app goes into background
+    if (nextAppState === 'background') {
+      webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
+    }
+
+    // Reload WebView when app returns to foreground
+    if (
+      appStateRef.current.match(/inactive|background/) &&
+      nextAppState === 'active'
+    ) {
+      if (webViewRef.current) {
+        setTimeout(() => {
+          webViewRef.current?.reload();
+        }, 100);
+      }
+    }
+
+    // Update current app state
+    appStateRef.current = nextAppState;
+  });
+
+  return () => {
+    subscription.remove();
+  };
+}, []);
 
   useEffect(() => {
     return () => {
@@ -941,7 +948,9 @@ const Home = () => {
       <StatusBar
         hidden={isLivePage}
         translucent={!isLivePage}
-        backgroundColor="transparent"
+       backgroundColor="#080707"
+       barStyle="light-content"
+        
       />
       <SafeAreaView
         style={[
@@ -975,12 +984,15 @@ const Home = () => {
         <WebView
           key={webViewKey}
           ref={webViewRef}
+          style={{ flex: 1, backgroundColor: '#1b1b1b' }}
+
           source={{
             uri: currentUrl,
             // YouTube embeds opened as a top-level page need a Referer,
             // otherwise iOS shows "Error 153" (player configuration error).
             headers: currentUrl.includes('youtube')
-              ? { Referer: 'https://learner-uat-new.viliyo.com/' }
+              ? { Referer: 'https://learner.viliyo.com/dashboard' }
+              //https://lt-learner.viliyo.com/learner/dashboard
               : undefined,
           }}
           javaScriptEnabled={true}
@@ -989,9 +1001,9 @@ const Home = () => {
           allowsInlineMediaPlayback={true}
           mediaPlaybackRequiresUserAction={false}
           originWhitelist={['*']}
-          injectedJavaScriptBeforeContentLoaded={
-            Platform.OS === 'ios' ? IOS_PDF_POLYFILLS_JS : undefined
-          }
+        injectedJavaScriptBeforeContentLoaded={`
+        ${Platform.OS === 'ios' ? IOS_PDF_POLYFILLS_JS : ''}
+        window.isNativeApp = true;true;`}
           injectedJavaScript={getInjectedJavaScript()}
           onShouldStartLoadWithRequest={handleShouldStartLoad}
           onNavigationStateChange={handleNavigationStateChange}
@@ -1056,12 +1068,12 @@ export default Home;
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#080707',
+    backgroundColor: '#1b1b1b',
   },
   iosLiveContainer: {
     flex: 1,
-    backgroundColor: '#080707',
-    paddingBottom: 20,
+    // backgroundColor: '#080707',
+    // paddingBottom: 20,
   },
   progressBar: {
     height: 3,
