@@ -12,24 +12,71 @@ import {
   ActivityIndicator,
   View,
   Alert,
-  Linking
+  Linking,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Orientation from 'react-native-orientation-locker';
 import KeepAwake from 'react-native-keep-awake';
 import { useNavigation } from '@react-navigation/native';
-import ImmersiveMode from "react-native-immersive-mode";
-
-
+import ImmersiveMode from 'react-native-immersive-mode';
 
 import CustomModal from '../components/CustomModal';
 
 const HOME_URL = 'https://learner.viliyo.com/dashboard';
-const MOBILE_TOKEN = "210303120209";
+const MOBILE_TOKEN = '210303120209';
+
+// Pauses every <video> and YouTube iframe (enablejsapi=1) on the page.
+const PAUSE_MEDIA_JS = `
+  (function() {
+    try {
+      document.querySelectorAll('video, audio').forEach(function(m) { m.pause(); });
+      document.querySelectorAll('iframe[src*="youtube"]').forEach(function(f) {
+        f.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }), '*');
+      });
+    } catch (e) {}
+  })();
+  true;
+`;
+
+// react-pdf / pdf.js (frontend) uses newer JS APIs that older iOS WebKit lacks,
+// which makes the PDF fail to render on iPhone only. Polyfill them before the
+// page's scripts run.
+const IOS_PDF_POLYFILLS_JS = `
+  (function() {
+    try {
+      if (!Promise.withResolvers) {
+        Promise.withResolvers = function() {
+          var resolve, reject;
+          var promise = new Promise(function(res, rej) { resolve = res; reject = rej; });
+          return { promise: promise, resolve: resolve, reject: reject };
+        };
+      }
+      if (!Array.prototype.at) {
+        Object.defineProperty(Array.prototype, 'at', { configurable: true, writable: true,
+          value: function(n) { n = Math.trunc(n) || 0; if (n < 0) n += this.length; return this[n]; } });
+      }
+      if (!Object.hasOwn) {
+        Object.hasOwn = function(o, k) { return Object.prototype.hasOwnProperty.call(o, k); };
+      }
+      if (!URL.canParse) {
+        URL.canParse = function(u, b) { try { new URL(u, b); return true; } catch (e) { return false; } };
+      }
+      if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype[Symbol.asyncIterator]) {
+        ReadableStream.prototype[Symbol.asyncIterator] = async function* () {
+          var reader = this.getReader();
+          try { while (true) { var r = await reader.read(); if (r.done) return; yield r.value; } }
+          finally { reader.releaseLock(); }
+        };
+      }
+    } catch (e) {}
+  })();
+  true;
+`;
+
+const isYouTubeEmbed = url => /youtube(-nocookie)?\.com\/embed/.test(url || '');
 
 const Home = () => {
-
   const navigation = useNavigation();
 
   const webViewRef = useRef(null);
@@ -39,8 +86,11 @@ const Home = () => {
   const appStateRef = useRef(AppState.currentState);
   const officeLoadTimeoutRef = useRef(null);
   const googleDriveLoadTimeoutRef = useRef(null);
+  const webRequestedOrientationRef = useRef(null);
 
-  const [currentUrl, setCurrentUrl] = useState(`${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`);
+  const [currentUrl, setCurrentUrl] = useState(
+    `${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`,
+  );
   const [canGoBack, setCanGoBack] = useState(false);
   const [backPressCount, setBackPressCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -53,14 +103,12 @@ const Home = () => {
   const [googleDriveLoadAttempts, setGoogleDriveLoadAttempts] = useState(0);
   const [pendingNavigation, setPendingNavigation] = useState(null);
 
-
   const [showLeaveModal, setShowLeaveModal] = useState(false);
 
   const targetUrl = 'https://learnerlive.viliyo.com/live/';
 
-
   useEffect(() => {
-    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+    const unsubscribe = navigation.addListener('beforeRemove', e => {
       if (!isLiveSessionUrl(currentUrl)) {
         return;
       }
@@ -68,7 +116,6 @@ const Home = () => {
       console.log('Blocking iOS back, showing modal');
 
       e.preventDefault();
-
 
       setPendingNavigation(e.data.action);
 
@@ -78,24 +125,35 @@ const Home = () => {
     return unsubscribe;
   }, [navigation, currentUrl]);
 
-useEffect(() => {
-  if (isLivePage) {
-    ImmersiveMode.fullLayout(true);
-    ImmersiveMode.setBarMode("Full"); 
-  } else {
-    ImmersiveMode.setBarMode("Normal"); 
-  }
-}, [isLivePage]);
+  useEffect(() => {
+    if (isLivePage) {
+      ImmersiveMode.fullLayout(true);
+      ImmersiveMode.setBarMode('Full');
+    } else {
+      ImmersiveMode.setBarMode('Normal');
+    }
+  }, [isLivePage]);
 
-  
+  useEffect(() => {
+  KeepAwake.activate();
+
+  return () => {
+    KeepAwake.deactivate();
+  };
+}, []);
+
   const handleConfirmLeave = () => {
     setShowLeaveModal(false);
+
+    // Leaving a live session — drop any web-requested landscape lock.
+    webRequestedOrientationRef.current = null;
+    // KeepAwake.deactivate();
+    Orientation.lockToPortrait();
 
     if (webViewRef.current && canGoBack) {
       webViewRef.current.goBack();
       return;
     }
-
 
     if (pendingNavigation) {
       navigation.dispatch(pendingNavigation);
@@ -110,14 +168,28 @@ useEffect(() => {
       PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.CAMERA,
         PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
+        // PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
       ]);
     }
   }, []);
 
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+    // Auto stop media when this screen loses focus.
+    return navigation.addListener('blur', () => {
+      webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
+    });
+  }, [navigation]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      // Auto stop media when the app leaves the foreground (needed on iOS).
+      if (nextAppState === 'background') {
+        webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
+      }
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
         if (isOfficeViewer && webViewRef.current) {
           setTimeout(() => {
             webViewRef.current?.reload();
@@ -144,7 +216,6 @@ useEffect(() => {
     };
   }, []);
 
-
   const handleBackPress = useCallback(() => {
     if (isOfficeViewer && webViewRef.current) {
       webViewRef.current.goBack();
@@ -152,7 +223,6 @@ useEffect(() => {
     }
 
     if (canGoBack && webViewRef.current) {
-
       setShowLeaveModal(true);
       return true;
     }
@@ -170,56 +240,81 @@ useEffect(() => {
   }, [canGoBack, backPressCount, isOfficeViewer]);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
+    const sub = BackHandler.addEventListener(
+      'hardwareBackPress',
+      handleBackPress,
+    );
     return () => sub.remove();
   }, [handleBackPress]);
 
   useEffect(() => {
+    Orientation.lockToPortrait();
+
     return () => {
-      Orientation.unlockAllOrientations();
+      if (orientationTimeoutRef.current) {
+        clearTimeout(orientationTimeoutRef.current);
+      }
+
+      webRequestedOrientationRef.current = null;
       Orientation.lockToPortrait();
-      KeepAwake.deactivate();
+      KeepAwake.activate();
     };
   }, []);
 
-  const getFinalUrl = (url) => {
-    if (url.includes("mobiletoken")) return url;
-    if (url.includes("view.officeapps.live.com")) return url;
-    if (url.includes("docs.google.com")) return url;
-    if (url.includes("drive.google.com")) return url;
-    return url.includes("?")
+  const getFinalUrl = url => {
+    if (url.includes('mobiletoken')) return url;
+    if (url.includes('view.officeapps.live.com')) return url;
+    if (url.includes('docs.google.com')) return url;
+    if (url.includes('drive.google.com')) return url;
+    return url.includes('?')
       ? `${url}&mobiletoken=${MOBILE_TOKEN}`
       : `${url}?mobiletoken=${MOBILE_TOKEN}`;
   };
 
-  const handleOrientation = (url) => {
+  const applyLandscape = () => {
+    // iOS 16+ only force-rotates with an explicit side; lockToLandscape()
+    // just allows landscape. Android keeps the either-direction lock.
+    if (Platform.OS === 'ios') {
+      Orientation.lockToLandscapeLeft();
+    } else {
+      Orientation.lockToLandscape();
+    }
+  };
+
+  const sendOrientationAck = mode => {
+    webViewRef.current?.injectJavaScript(
+      `window.dispatchEvent(new CustomEvent('native-orientation',{detail:{type:'orientation:ack',mode:'${mode}',supported:true}}));true;`,
+    );
+  };
+
+  const handleOrientation = url => {
     if (!url) return;
 
-    const shouldLandscape = url.includes("/live/") ||
-      url.includes("/session-details") ||
-      url.includes("/boards/") ||
-      url.includes("docs.google.com/forms") ||
-      url.includes("docs.google.com/presentation") ||
-      url.includes("docs.google.com/spreadsheets") ||
-      url.includes("youtube.com/embed") ||
-      url.includes("youtube.com/watch");
+    setIsLivePage(url.includes('/live/'));
 
-    const isLive = url.includes("/live/");
-    setIsLivePage(isLive);
+    if (orientationTimeoutRef.current) {
+      clearTimeout(orientationTimeoutRef.current);
+    }
 
-    if (orientationTimeoutRef.current) clearTimeout(orientationTimeoutRef.current);
     orientationTimeoutRef.current = setTimeout(() => {
-      if (shouldLandscape) {
-        console.log('[Orientation] Locking to landscape for:', url);
-        KeepAwake.activate();
-        Orientation.unlockAllOrientations();
-        Orientation.lockToLandscape();
-      } else {
-        console.log('[Orientation] Locking to portrait for:', url);
-        KeepAwake.deactivate();
-        Orientation.unlockAllOrientations();
-        Orientation.lockToPortrait();
+      // If the web app has requested a specific orientation, honor it.
+      if (webRequestedOrientationRef.current === 'landscape') {
+        console.log(
+          '[Orientation] Web-requested landscape — keeping landscape',
+        );
+        applyLandscape();
+        return;
       }
+
+      if (webRequestedOrientationRef.current === 'portrait') {
+        console.log('[Orientation] Web-requested portrait — keeping portrait');
+        Orientation.lockToPortrait();
+        return;
+      }
+
+      console.log('[Orientation] Default — locking to portrait for:', url);
+      // KeepAwake.deactivate();
+      Orientation.lockToPortrait();
     }, 200);
   };
 
@@ -251,117 +346,147 @@ useEffect(() => {
     setTimeout(() => setRefreshing(false), 2000);
   };
 
-  const isOfficeUrl = (url) => {
-    return url.includes('view.officeapps.live.com') ||
+  const isOfficeUrl = url => {
+    return (
+      url.includes('view.officeapps.live.com') ||
       url.includes('officeapps.live.com') ||
-      url.includes('powerpoint.officeapps.live.com');
+      url.includes('powerpoint.officeapps.live.com')
+    );
   };
 
-  const isGoogleFormUrl = (url) => {
+  const isPdfUrl = url => /\.pdf($|[?#])/i.test(url || '');
+
+  const isGoogleFormUrl = url => {
     return url.includes('docs.google.com/forms');
   };
 
-  const isGoogleDriveAuthUrl = (url) => {
-    return url.includes('drive.google.com/auth_warmup') ||
+  const isGoogleDriveAuthUrl = url => {
+    return (
+      url.includes('drive.google.com/auth_warmup') ||
       url.includes('accounts.google.com') ||
-      (url.includes('drive.google.com') && url.includes('auth'));
+      (url.includes('drive.google.com') && url.includes('auth'))
+    );
   };
 
-  const isGoogleDriveViewerUrl = (url) => {
-    return url.includes('docs.google.com/viewer') ||
-      (url.includes('drive.google.com') && url.includes('viewer'));
+  const isGoogleDriveViewerUrl = url => {
+    return (
+      url.includes('docs.google.com/viewer') ||
+      (url.includes('drive.google.com') && url.includes('viewer'))
+    );
   };
 
- const handleShouldStartLoad = (request) => {
-  let url = request.url;
-  console.log('[Should Start Load]', url);
+  const isUnauthorizedUrl = url => !!url && url.includes('/unauthorized');
 
-  
-  if (url.startsWith('tel:')) {
-    console.log('[TEL detected]', url);
+  const handleShouldStartLoad = request => {
+    let url = request.url;
+    console.log('[Should Start Load]', url);
 
-    const phoneNumber = url.split('?')[0];
-
-    Linking.openURL(phoneNumber).catch(err => {
-      console.error('Failed to open dialer:', err);
-      Alert.alert('Error', 'Unable to open dialer');
-    });
-
-    return false;
-  }
-
-  if (url.startsWith('about:blank')) return true;
-
-  if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
-    console.log('[iOS] Google Drive auth detected, handling...');
-    setIsGoogleDriveAuth(true);
-    setIsLoading(true);
-
-    if (googleDriveLoadTimeoutRef.current) {
-      clearTimeout(googleDriveLoadTimeoutRef.current);
-    }
-
-    googleDriveLoadTimeoutRef.current = setTimeout(() => {
-      setIsLoading(false);
-      setIsGoogleDriveAuth(false);
-    }, 100);
-
-    return true;
-  }
-
-  if (isOfficeViewer && !isOfficeUrl(url)) {
-    console.log('[Navigating away from Office viewer]');
-    setIsOfficeViewer(false);
-    setOfficeLoading(false);
-    return true;
-  }
-
-  if (isGoogleFormUrl(url)) {
-    console.log('[Google Form Detected - Setting Landscape]', url);
-    setTimeout(() => {
-      Orientation.unlockAllOrientations();
-      Orientation.lockToLandscape();
-    }, 100);
-  }
-
-  if (isOfficeUrl(url)) {
-    console.log('[Office URL Detected]', url);
-    setIsOfficeViewer(true);
-    setOfficeLoading(true);
-
-    officeLoadTimeoutRef.current = setTimeout(() => {
-      setOfficeLoading(false);
-    }, 1000);
-
-    return true;
-  }
-
-  if (
-    url.includes("/boards/") ||
-    url.includes("/video/") ||
-    url.includes("youtube.com/embed") ||
-    url.includes("docs.google.com/forms")
-  ) {
-    return true;
-  }
-
-  if (
-    !url.includes('mobiletoken') &&
-    !isOfficeUrl(url) &&
-    !isGoogleFormUrl(url) &&
-    !isGoogleDriveAuthUrl(url)
-  ) {
-    const urlWithToken = getFinalUrl(url);
-
-    if (urlWithToken !== url) {
-      console.log('[URL Modified with token]', urlWithToken);
-      setCurrentUrl(urlWithToken);
+    // Unauthorized page -> use the dashboard URL instead.
+    if (isUnauthorizedUrl(url)) {
+      console.log('[Unauthorized] Redirecting to', HOME_URL);
+      setCurrentUrl(`${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`);
       return false;
     }
-  }
 
-  return true;
-};
+    if (url.startsWith('tel:')) {
+      console.log('[TEL detected]', url);
+
+      const phoneNumber = url.split('?')[0];
+
+      Linking.openURL(phoneNumber).catch(err => {
+        console.error('Failed to open dialer:', err);
+        Alert.alert('Error', 'Unable to open dialer');
+      });
+
+      return false;
+    }
+
+    if (url.startsWith('about:blank')) return true;
+
+    // PDFs: open through the Google Docs viewer on iOS (it renders reliably
+    // in the WebView, same as Android). Skip if already inside the viewer.
+    if (
+      Platform.OS === 'ios' &&
+      request.isTopFrame !== false &&
+      isPdfUrl(url) &&
+      !isGoogleDriveViewerUrl(url)
+    ) {
+      const viewerUrl = `https://docs.google.com/viewer?embedded=true&url=${encodeURIComponent(
+        url,
+      )}`;
+      console.log('[iOS] Opening PDF in Google viewer', viewerUrl);
+      setCurrentUrl(viewerUrl);
+      return false;
+    }
+    if (isPdfUrl(url) || isGoogleDriveViewerUrl(url)) return true;
+
+    // Let YouTube embeds (youtube.com / youtube-nocookie.com) load inside the
+    // page's iframe. Without this the URL gets a mobiletoken appended and the
+    // whole WebView is navigated to it, so the video never plays in the page.
+    if (isYouTubeEmbed(url)) return true;
+
+    if (Platform.OS === 'ios' && isGoogleDriveAuthUrl(url)) {
+      console.log('[iOS] Google Drive auth detected, handling...');
+      setIsGoogleDriveAuth(true);
+      setIsLoading(true);
+
+      if (googleDriveLoadTimeoutRef.current) {
+        clearTimeout(googleDriveLoadTimeoutRef.current);
+      }
+
+      googleDriveLoadTimeoutRef.current = setTimeout(() => {
+        setIsLoading(false);
+        setIsGoogleDriveAuth(false);
+      }, 100);
+
+      return true;
+    }
+
+    if (isOfficeViewer && !isOfficeUrl(url)) {
+      console.log('[Navigating away from Office viewer]');
+      setIsOfficeViewer(false);
+      setOfficeLoading(false);
+      return true;
+    }
+
+    if (isOfficeUrl(url)) {
+      console.log('[Office URL Detected]', url);
+      setIsOfficeViewer(true);
+      setOfficeLoading(true);
+
+      officeLoadTimeoutRef.current = setTimeout(() => {
+        setOfficeLoading(false);
+      }, 1000);
+
+      return true;
+    }
+
+    if (
+      url.includes('/boards/') ||
+      url.includes('/video/') ||
+      isYouTubeEmbed(url) ||
+      url.includes('docs.google.com/forms')
+    ) {
+      return true;
+    }
+
+    if (
+      !url.includes('mobiletoken') &&
+      !isOfficeUrl(url) &&
+      !isGoogleFormUrl(url) &&
+      !isGoogleDriveAuthUrl(url)
+    ) {
+      const urlWithToken = getFinalUrl(url);
+
+      if (urlWithToken !== url) {
+        console.log('[URL Modified with token]', urlWithToken);
+        setCurrentUrl(urlWithToken);
+        return false;
+      }
+    }
+
+    return true;
+  };
 
   const getInjectedJavaScript = () => {
     const officeFixScript = `
@@ -550,15 +675,18 @@ useEffect(() => {
 
     const autoPlayVideoJS = `
       (function() {
-        const videos = document.querySelectorAll('video, iframe[src*="youtube.com/embed"]');
+        const videos = document.querySelectorAll('video, iframe[src*="youtube.com/embed"], iframe[src*="youtube-nocookie.com/embed"]');
         videos.forEach(video => {
           try {
             if(video.tagName === 'VIDEO') {
+              video.setAttribute('playsinline', '');
               video.play().catch(e => console.log('Video play error', e));
             } else if(video.tagName === 'IFRAME') {
               const src = video.src;
               if(!src.includes('autoplay=1')) {
-                video.src = src + (src.includes('?') ? '&' : '?') + 'autoplay=1&playsinline=1';
+                video.src = src.includes('autoplay=')
+                  ? src.replace('autoplay=0', 'autoplay=1')
+                  : src + (src.includes('?') ? '&' : '?') + 'autoplay=1&playsinline=1';
               }
             }
           } catch(e) {}
@@ -591,10 +719,64 @@ useEffect(() => {
     true;
   `;
 
-  const handleMessage = (event) => {
+  const handleMessage = event => {
     const data = event.nativeEvent.data;
     console.log('[Message from WebView]', data);
 
+    // --- JSON messages from the web app (e.g. orientation:lock) ---
+    let parsed = null;
+    if (typeof data === 'string' && data.trim().startsWith('{')) {
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        parsed = null;
+      }
+    }
+
+    if (parsed) {
+      if (parsed.type === 'orientation:lock') {
+        const mode = parsed.mode;
+
+        if (orientationTimeoutRef.current) {
+          clearTimeout(orientationTimeoutRef.current);
+        }
+
+        if (mode === 'landscape') {
+          console.log('[Orientation] Web requested LANDSCAPE');
+          webRequestedOrientationRef.current = 'landscape';
+          KeepAwake.activate();
+          applyLandscape();
+          sendOrientationAck('landscape');
+        } else if (mode === 'portrait') {
+          console.log('[Orientation] Web requested PORTRAIT');
+          webRequestedOrientationRef.current = 'portrait';
+          Orientation.lockToPortrait();
+          sendOrientationAck('portrait');
+        } else if (mode === 'unlock') {
+          console.log('[Orientation] Web requested UNLOCK');
+          webRequestedOrientationRef.current = null;
+          // KeepAwake.deactivate();
+          Orientation.lockToPortrait(); // fall back to app default
+        }
+        return;
+      }
+
+      if (parsed.type === 'orientation:unlock') {
+        console.log('[Orientation] Web requested UNLOCK');
+        if (orientationTimeoutRef.current) {
+          clearTimeout(orientationTimeoutRef.current);
+        }
+        webRequestedOrientationRef.current = null;
+        // KeepAwake.deactivate();
+        Orientation.lockToPortrait(); // app default
+        return;
+      }
+
+      // Unknown JSON type — ignore or handle below
+      return;
+    }
+
+    // --- Existing plain-string messages ---
     if (data === 'officeViewerLoaded') {
       console.log('[Office viewer loaded successfully]');
       setOfficeLoading(false);
@@ -626,13 +808,24 @@ useEffect(() => {
     }
   };
 
-
-
-  const handleNavigationStateChange = (navState) => {
+  const handleNavigationStateChange = navState => {
     console.log('[Navigation State]', navState.url);
 
+    // Server redirects / SPA route changes don't go through
+    // onShouldStartLoadWithRequest, so catch /unauthorized here too.
+    if (isUnauthorizedUrl(navState.url)) {
+      const homeUrl = `${HOME_URL}?mobiletoken=${MOBILE_TOKEN}`;
+      console.log('[Unauthorized] (nav state) Redirecting to', homeUrl);
+      setCurrentUrl(homeUrl);
+      // State may already equal homeUrl (no re-render), so navigate directly.
+      webViewRef.current?.injectJavaScript(
+        `window.location.replace(${JSON.stringify(homeUrl)}); true;`,
+      );
+      return;
+    }
+
     setCanGoBack(navState.canGoBack);
-    setCurrentUrl(navState.url); 
+    setCurrentUrl(navState.url);
 
     const isOffice = isOfficeUrl(navState.url);
     if (isOffice !== isOfficeViewer) {
@@ -642,7 +835,10 @@ useEffect(() => {
       }
     }
 
-    if (!navState.url.includes('drive.google.com') && !navState.url.includes('docs.google.com')) {
+    if (
+      !navState.url.includes('drive.google.com') &&
+      !navState.url.includes('docs.google.com')
+    ) {
       if (isGoogleDriveAuth) {
         console.log('[Navigation] Exiting Google Drive, resetting auth state');
         setIsGoogleDriveAuth(false);
@@ -659,22 +855,15 @@ useEffect(() => {
       }
     }
 
-    if (!isOffice) {
-      handleOrientation(navState.url);
-    } else {
-      Orientation.unlockAllOrientations();
-    }
+    handleOrientation(navState.url);
   };
-
 
   useEffect(() => {
     const backAction = () => {
-
       if (isLiveSessionUrl(currentUrl)) {
         setShowLeaveModal(true);
         return true;
       }
-
 
       if (canGoBack && webViewRef.current) {
         webViewRef.current.goBack();
@@ -686,23 +875,18 @@ useEffect(() => {
 
     const backHandler = BackHandler.addEventListener(
       'hardwareBackPress',
-      backAction
+      backAction,
     );
 
     return () => backHandler.remove();
   }, [currentUrl, canGoBack]);
 
-
-
-  const isLiveSessionUrl = (url) => {
+  const isLiveSessionUrl = url => {
     return url?.includes('/live');
   };
 
-
-
-
-  const handleLoadEnd = () => {
-    console.log('[WebView Load End]');
+  const handleLoadEnd = syntheticEvent => {
+    console.log('[WebView Load End]', syntheticEvent?.nativeEvent?.url);
 
     setIsLoading(false);
     setOfficeLoading(false);
@@ -724,13 +908,25 @@ useEffect(() => {
     }
   };
 
-  const handleLoadStart = () => {
-    console.log('[WebView Load Start]');
+  const handleLoadStart = syntheticEvent => {
+    console.log('[WebView Load Start]', syntheticEvent?.nativeEvent?.url);
   };
 
-  const handleError = (syntheticEvent) => {
+  const handleError = syntheticEvent => {
     const { nativeEvent } = syntheticEvent;
-    console.error('[WebView Error]', nativeEvent);
+    console.error('[WebView Error]', nativeEvent?.url, nativeEvent);
+
+    // iOS reports PDFs/downloads as WebKitErrorDomain 102 ("Frame load
+    // interrupted"). It isn't a real failure, so skip the error screen.
+    if (
+      Platform.OS === 'ios' &&
+      (nativeEvent?.code === 102 || nativeEvent?.code === -999)
+    ) {
+      syntheticEvent.preventDefault?.();
+      setOfficeLoading(false);
+      setIsLoading(false);
+      return;
+    }
     setOfficeLoading(false);
     setIsLoading(false);
 
@@ -753,10 +949,17 @@ useEffect(() => {
       <StatusBar
         hidden={isLivePage}
         translucent={!isLivePage}
-        backgroundColor="transparent"
+       backgroundColor="#080707"
+       barStyle="light-content"
+        
       />
       <SafeAreaView
-        style={[styles.container, isLivePage && Platform.OS === 'ios' ? styles.iosLiveContainer : styles.container]}
+        style={[
+          styles.container,
+          isLivePage && Platform.OS === 'ios'
+            ? styles.iosLiveContainer
+            : styles.container,
+        ]}
         edges={isLivePage ? [] : ['top', 'left', 'right', 'bottom']}
       >
         {shouldShowLoader() && (
@@ -770,7 +973,10 @@ useEffect(() => {
             style={[
               styles.progressBar,
               {
-                width: progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
+                width: progress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0%', '100%'],
+                }),
               },
             ]}
           />
@@ -779,24 +985,52 @@ useEffect(() => {
         <WebView
           key={webViewKey}
           ref={webViewRef}
-          source={{ uri: currentUrl }}
+          style={{ flex: 1, backgroundColor: '#1b1b1b' }}
+
+          source={{
+            uri: currentUrl,
+            // YouTube embeds opened as a top-level page need a Referer,
+            // otherwise iOS shows "Error 153" (player configuration error).
+            headers: currentUrl.includes('youtube')
+              ? { Referer: 'https://learner.viliyo.com/dashboard' }
+              //https://lt-learner.viliyo.com/learner/dashboard
+              : undefined,
+          }}
           javaScriptEnabled={true}
           domStorageEnabled={true}
           startInLoadingState={false}
           allowsInlineMediaPlayback={true}
           mediaPlaybackRequiresUserAction={false}
           originWhitelist={['*']}
+        injectedJavaScriptBeforeContentLoaded={`
+        ${Platform.OS === 'ios' ? IOS_PDF_POLYFILLS_JS : ''}
+        window.isNativeApp = true;true;`}
           injectedJavaScript={getInjectedJavaScript()}
           onShouldStartLoadWithRequest={handleShouldStartLoad}
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
           onLoadProgress={onLoadProgress}
           onLoadStart={handleLoadStart}
+          // iOS: a PDF served as an attachment (Content-Disposition) or with a
+          // non-.pdf URL is reported as a download instead of being rendered.
+          onFileDownload={({ nativeEvent }) => {
+            const downloadUrl = nativeEvent?.downloadUrl;
+            console.log('[iOS] File download', downloadUrl);
+            if (downloadUrl) {
+              Linking.openURL(downloadUrl).catch(() =>
+                Alert.alert('Error', 'Unable to open this file'),
+              );
+            }
+          }}
           onLoadEnd={handleLoadEnd}
           onError={handleError}
-          onHttpError={(syntheticEvent) => {
+          onHttpError={syntheticEvent => {
             const { nativeEvent } = syntheticEvent;
-            console.error('[HTTP Error]', nativeEvent.statusCode, nativeEvent.url);
+            console.error(
+              '[HTTP Error]',
+              nativeEvent.statusCode,
+              nativeEvent.url,
+            );
             setOfficeLoading(false);
             if (isGoogleDriveAuth) {
               setIsGoogleDriveAuth(false);
@@ -811,12 +1045,13 @@ useEffect(() => {
           allowsBackForwardNavigationGestures={true}
           automaticallyAdjustContentInsets={true}
           contentInsetAdjustmentBehavior="automatic"
-          userAgent={Platform.OS === 'ios' ?
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1" :
-            undefined}
+          userAgent={
+            Platform.OS === 'ios'
+              ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1'
+              : undefined
+          }
         />
       </SafeAreaView>
-
 
       <CustomModal
         visible={showLeaveModal}
@@ -834,12 +1069,12 @@ export default Home;
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#080707',
+    backgroundColor: '#1b1b1b',
   },
   iosLiveContainer: {
     flex: 1,
-    backgroundColor: '#080707',
-    paddingBottom: 10,
+    // backgroundColor: '#080707',
+    // paddingBottom: 20,
   },
   progressBar: {
     height: 3,
