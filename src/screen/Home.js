@@ -105,7 +105,7 @@ const Home = () => {
 
   const [showLeaveModal, setShowLeaveModal] = useState(false);
 
-  // const targetUrl = 'https://learnerlive.viliyo.com/live/';
+  const targetUrl = 'https://learnerlive.viliyo.com/live/';
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', e => {
@@ -134,12 +134,20 @@ const Home = () => {
     }
   }, [isLivePage]);
 
+  useEffect(() => {
+  KeepAwake.activate();
+
+  return () => {
+    KeepAwake.deactivate();
+  };
+}, []);
+
   const handleConfirmLeave = () => {
     setShowLeaveModal(false);
 
     // Leaving a live session — drop any web-requested landscape lock.
     webRequestedOrientationRef.current = null;
-    KeepAwake.deactivate();
+    // KeepAwake.deactivate();
     Orientation.lockToPortrait();
 
     if (webViewRef.current && canGoBack) {
@@ -172,34 +180,27 @@ const Home = () => {
     });
   }, [navigation]);
 
-useEffect(() => {
-  const subscription = AppState.addEventListener('change', nextAppState => {
-
-    // Stop videos and audio when app goes into background
-    if (nextAppState === 'background') {
-      webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
-    }
-
-    // Reload WebView when app returns to foreground
-    if (
-      appStateRef.current.match(/inactive|background/) &&
-      nextAppState === 'active'
-    ) {
-      if (webViewRef.current) {
-        setTimeout(() => {
-          webViewRef.current?.reload();
-        }, 100);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      // Auto stop media when the app leaves the foreground (needed on iOS).
+      if (nextAppState === 'background') {
+        webViewRef.current?.injectJavaScript(PAUSE_MEDIA_JS);
       }
-    }
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
+        if (isOfficeViewer && webViewRef.current) {
+          setTimeout(() => {
+            webViewRef.current?.reload();
+          }, 100);
+        }
+      }
+      appStateRef.current = nextAppState;
+    });
 
-    // Update current app state
-    appStateRef.current = nextAppState;
-  });
-
-  return () => {
-    subscription.remove();
-  };
-}, []);
+    return () => subscription.remove();
+  }, [isOfficeViewer]);
 
   useEffect(() => {
     return () => {
@@ -256,7 +257,7 @@ useEffect(() => {
 
       webRequestedOrientationRef.current = null;
       Orientation.lockToPortrait();
-      KeepAwake.deactivate();
+      KeepAwake.activate();
     };
   }, []);
 
@@ -312,7 +313,7 @@ useEffect(() => {
       }
 
       console.log('[Orientation] Default — locking to portrait for:', url);
-      KeepAwake.deactivate();
+      // KeepAwake.deactivate();
       Orientation.lockToPortrait();
     }, 200);
   };
@@ -754,7 +755,7 @@ useEffect(() => {
         } else if (mode === 'unlock') {
           console.log('[Orientation] Web requested UNLOCK');
           webRequestedOrientationRef.current = null;
-          KeepAwake.deactivate();
+          // KeepAwake.deactivate();
           Orientation.lockToPortrait(); // fall back to app default
         }
         return;
@@ -766,7 +767,7 @@ useEffect(() => {
           clearTimeout(orientationTimeoutRef.current);
         }
         webRequestedOrientationRef.current = null;
-        KeepAwake.deactivate();
+        // KeepAwake.deactivate();
         Orientation.lockToPortrait(); // app default
         return;
       }
